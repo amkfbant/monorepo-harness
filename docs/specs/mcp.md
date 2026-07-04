@@ -831,6 +831,22 @@ deterministically accepted evidence, binding evidence to the closing `runId` and
 requiring `redTestPath` to be an actually-changed test path. No reviewer/LLM
 verdict is consulted for this state transition.
 
+`review_consensus` also has a deterministic attached-evidence fallback for
+external Codex review transcripts. If no fresh recorded review close-check is
+available, convergence reads operator-attested `hitch_evidence` rows attached to
+the `review_consensus` condition id and accepts only explicit no-blocker shapes:
+the GitHub Codex "Didn't find any major issues" transcript on `kind:
+transcript`, review JSON `ready_to_merge` / `verdict: "ready_to_merge"` with no
+in-scope P0/P1 findings on `kind: transcript`, or zero `openInScopeP0` + zero
+`openInScopeP1` metrics on `kind: metrics`; every present accepted alias for a
+metric counter must be zero. A fresh recorded failed review check remains
+authoritative, arbitrary prose evidence does not pass, malformed review JSON or
+near-8 KiB transcript excerpts do not pass, the newest review-shaped row
+decides, and every whole/fenced/extractable review JSON object in a row is
+evaluated before any no-major-issues phrase in the text. Conflicting
+ready/verdict aliases, conflicting severity/scope aliases, and blockers in
+either `findings` or `issues` fail closed.
+
 `harness.review.consensus` returns the persisted `review_consensus` row without
 introducing extra enum values. The `active` row is returned raw, so parse
 `active.summaryJson` for its `semantics` field; `history` entries are already

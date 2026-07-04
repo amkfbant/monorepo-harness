@@ -608,6 +608,18 @@ harness hitch evidence show <evidence-id> [--json]
   任意の rule shape（`kind` / `requiredMetricKeys`）に一致する operator-attested evidence
   行**によって満たされる（行存在だけでは不十分。convergence の deterministic gate。詳細は
   [`hitch-convergence.md`](./hitch-convergence.md)）。
+  `review_consensus` 種別の close condition も、fresh な deterministic review close-check が
+  無い場合に限り、同じ `--condition <id>` で紐づいた operator-attested Codex review evidence
+  を fallback として消費できる。受理されるのは GitHub Codex の
+  `Didn't find any major issues` transcript（`--kind transcript`）、whole/fenced/extractable
+  review JSON の `ready_to_merge` で in-scope P0/P1 が無い transcript、または
+  `openInScopeP0=0` と `openInScopeP1=0` metrics（`--kind metrics`）のような明示的
+  no-blocker 形だけ。metrics alias が複数ある場合は全 alias が 0 でなければならない。
+  review-shaped evidence が複数ある場合は最新行が決定し、review JSON は no-major-issues
+  phrase より先に whole/fenced/extractable object を全評価する。malformed/unterminated
+  review JSON、矛盾する ready/scope/severity alias、`findings` または `issues` の
+  in-scope P0/P1、8 KiB cap 近傍の transcript は通らない。
+  `hitch close-check record` による `review_consensus` の manual `passed` 記録は引き続き拒否される。
 
 - `evidence list`: hitch の `requireSession()` で存在確認後に全 evidence 行を返す
   （テキスト: tab 区切り per-row — created_at, short-id, kind, attester, label, cmd=…

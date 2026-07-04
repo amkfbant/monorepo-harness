@@ -1140,6 +1140,41 @@ command checks using the existing close-condition machinery; it does not inject
 synthetic test gates and does not use reviewer self-report as state-transition
 evidence.
 
+When a deterministic review runner has not recorded a fresh `review_consensus`
+close-check, convergence can also satisfy that condition from operator-attested
+`hitch_evidence` rows attached to the same condition id. This is a fail-closed
+fallback for external Codex review transcripts, not a manual `passed` override:
+manual `hitch close-check record` remains rejected for `review_consensus`. A
+candidate evidence row must be `attester === "operator"`, condition-scoped,
+fresh relative to `freshAfter`, and must carry one of the accepted no-blocker
+shapes:
+
+- transcript output containing the GitHub Codex no-major-issues phrase
+  ("Didn't find any major issues" / "did not find any major issues") on a
+  `kind: transcript` row;
+- transcript output containing a review JSON object, either as the whole output,
+  in a fenced JSON block, or as an extractable object, with `ready_to_merge:
+  true`, `readyToMerge: true`, or `verdict: "ready_to_merge"` and a
+  `findings`/`issues` array with no in-scope P0/P1 finding objects on a `kind:
+  transcript` row. If multiple ready/verdict aliases are present, they must
+  agree. If both `findings` and `issues` arrays are present, both are inspected;
+- metrics with both `openInScopeP0`/`open_in_scope_p0`/`p0` and
+  `openInScopeP1`/`open_in_scope_p1`/`p1` equal to zero on a `kind: metrics`
+  row. If multiple accepted aliases are present for the same counter, every
+  present alias must be zero.
+
+Unsupported prose such as "looks good", stale rows, rows attached to another
+condition id, kind/shape mismatches, JSON findings with unparseable severity or
+scope, contradictory severity/scope aliases, contradictory ready/verdict
+aliases, malformed or unterminated review JSON, review JSON blocks that appear
+after an earlier passing block, transcript output at or near the 8 KiB excerpt
+cap, or fresh recorded failed review checks do not pass the gate. If fresh
+evidence contains multiple review-shaped rows, the newest review-shaped row
+decides; unsupported rows are ignored. If a row contains review JSON, every
+whole/fenced/extractable review JSON object in that row is evaluated before any
+no-major-issues phrase in the text, including extractable objects outside fenced
+blocks. A fresh recorded review check remains authoritative.
+
 `facet_red_test` (#279) is an **opt-in, deterministic** close-condition kind
 (category `auto-verify`) that closes the reviewer-depth gap: the static
 consensus reviewer does not execute tests, so it can approve work whose

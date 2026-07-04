@@ -69,7 +69,7 @@ metric は自動で検証できるか？
 ├─ 可（auto-verify）
 │  ├─ コマンド実行で判定 …………………… command       （close-check runner が実行）
 │  ├─ open finding の閾値 …………………… finding_policy （evaluateFindingPolicy）
-│  ├─ レビュー承認 ………………………………… review_consensus（review runner が充足）
+│  ├─ レビュー承認 ………………………………… review_consensus（review runner / Codex evidence fallback が充足）
 │  ├─ facet ごとの RED test 被覆 ………… facet_red_test （evaluateFacetRedCoverage・#279）
 │  └─ operator 添付の証拠で判定 ………… evidence_attached（evaluateEvidenceAttached・#91）
 └─ 不可（外部証拠が要る = ask_human）
@@ -89,6 +89,18 @@ operator が `hitch_evidence` に添付した証拠行を **決定論的に**評
 自己申告は一切見ない・provenance `attester==='operator'` をコード側で再検証）。証拠が
 無い / stale / shape 不一致は fail-closed（`passed` にしない）。決定表の詳細は
 [`hitch-convergence.md`](./hitch-convergence.md)。
+
+`review_consensus` は通常 review runner が `hitch_close_checks` に記録した deterministic
+close-check で充足する。fresh な recorded check が無い場合のみ、condition-scoped な
+operator-attested Codex review evidence を fallback として評価する。受理 shape は
+GitHub Codex の no-major-issues transcript / whole・fenced・extractable な
+ready-to-merge review JSON（どちらも `kind: transcript`）で in-scope P0/P1 が無いもの、
+または open in-scope P0/P1 が 0 の `kind: metrics` に限定される。metrics alias は全て
+0 である必要がある。複数の review-shaped evidence では最新行が決定し、review JSON は
+no-major-issues phrase より先に whole/fenced/extractable object を全評価する。
+malformed/unterminated review JSON、矛盾する ready/scope/severity alias、`findings` または
+`issues` の in-scope P0/P1、8 KiB cap 近傍 transcript は通らない。manual `passed`
+close-check record は引き続き拒否される。
 
 `facet_red_test`（#279・opt-in）は consensus reviewer の depth gap（テスト未実行ゆえ
 被覆欠落を素通り）を埋める決定論ゲート。`rule.facets[]` の各 facet（`{id, testGlobs[],
