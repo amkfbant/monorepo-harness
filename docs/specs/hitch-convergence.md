@@ -63,6 +63,23 @@ initial -> delta -> close
 Regression/manual reviews can be recorded explicitly, but they do not
 automatically expand the hitch.
 
+`review_consensus` is an auto-verify close condition, not an operator handoff.
+It can require the coder/reviewer loop before a hitch reaches `close_ready`, but
+it does not stop the normal `harness hitch orchestrate` terminal step. When all
+required close conditions are auto-verify kinds and pass, `close_ready` maps to
+`close_and_pr`. By default that creates a draft PR; with `--auto-merge`, it
+first applies the merge gate's approval preflight. A preflight hard blocker
+escalates before publishing a new PR; if a previous ready PR already exists from
+a retryable post-publish path, that PR remains open. Otherwise the path creates a
+ready PR and then the full merge gate may merge it, leave it open for transient
+blockers, or escalate with the PR already published if later post-publish gate
+facts hard block the merge. Operators who want a reviewed diff to remain
+unpublished for later aggregation must add a required ask-human close condition
+such as `manual` (or `operation_status` with `metadata.operationId`). Drive-only
+callers such as `course orchestrate` may use
+`stopAtCloseReady`, but that is a caller-specific halt before PR publication,
+not the default hitch terminal behavior.
+
 ## Spec Review Layer & Ratified Phase Compatibility
 
 The course/phase roadmap layer owns phase specs (`scope_json` and
@@ -1467,10 +1484,15 @@ clustering, dashboard mutation UI, raw shell execution, or external issue
 tracker sync.
 
 Automatic merge is now available as an opt-in (default OFF): when
-`harness hitch orchestrate --auto-merge` is set, `closeAndPr` evaluates a
-deterministic merge gate (close-ready ∧ consensus approved with quorum, or a
-human override ∧ CI green) and merges the PR, escalating fail-closed on a
-hard-blocked gate. See [`workflow.md`](./workflow.md) (auto-merge).
+`harness hitch orchestrate --auto-merge` is set, `closeAndPr` first evaluates the
+merge gate approval preflight before publishing a ready PR. Preflight hard
+blockers escalate without publishing a new PR; if an earlier retryable pass
+already published a ready PR, that existing PR remains open. If preflight is not
+hard-blocked, `closeAndPr` publishes a ready PR, evaluates the full deterministic merge gate
+(close-ready ∧ (consensus approved with quorum, or human override) ∧ CI green ∧
+tier eligible), and merges when it passes. Post-publish hard blockers escalate
+with the PR already published; transient blockers leave the PR open for manual or
+later handling. See [`workflow.md`](./workflow.md) (auto-merge).
 ```
 
 ### Transient close-PR push retry (#396 part 2)

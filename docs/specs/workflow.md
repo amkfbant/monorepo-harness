@@ -1540,10 +1540,33 @@ follow-up finding だけなら hitch は close できる。open な in-scope P0/
 は通常の deferred work として扱えない（[`hitch-convergence.md`](./hitch-convergence.md)
 の Core Rules を参照）。
 
+`close_ready` は「PR 作成前で自動停止する」状態ではない。通常の
+`harness hitch orchestrate` は convergence が `close_ready` を返すと terminal
+action `close_and_pr` を実行し、既定では draft PR を作成する。`--auto-merge`
+指定時はまず merge gate の approval preflight を評価する。preflight の hard
+blocker は新規 PR 作成前に escalate する（CI 待ち retry などで既存 ready PR が
+ある場合は、その PR は残る）。hard-block しなければ ready PR を作成し、その後の
+full merge gate が通れば merge、transient blocker なら PR を残し、外部
+review ingestion や DB 事実の変化で post-publish hard blocker が出れば PR 公開済み
+のまま escalate する。diff を run artifact と hitch 状態に留め、複数 phase の変更を
+後で 1 本の PR に集約したい運用では、required な operator gate（例: `kind: manual`。
+`kind: operation_status` を使う場合は `metadata.operationId` 必須）を close 条件に
+入れて `continue` / operator wait で止める。`review_consensus` は coder/reviewer ループを成立させる
+auto-verify gate であり、PR 作成を止める operator gate ではない。
+
+例外として、`course orchestrate` や `hitch finding classify --then-rerun` など
+drive-only の caller は `stopAtCloseReady: true` で `HitchOrchestrator.run()` を
+呼び、`close_ready` で halt する。この停止は caller 固有の運用モードであり、
+`harness hitch orchestrate` の通常 terminal step は `close_and_pr` である。
+
 ## Phase 3 — auto-merge（opt-in・既定 OFF・現状仕様）
 
-`harness hitch orchestrate` の terminal step（`close_and_pr`）は PR 作成後に
-**opt-in の auto-merge** を実行できる。既定 OFF（`--auto-merge` 指定時のみ）。設計は
+`harness hitch orchestrate` の terminal step（`close_and_pr`）は PR publication と
+**opt-in の auto-merge** を実行できる。既定 OFF（`--auto-merge` 指定時のみ）。`--auto-merge`
+では ready PR を作成する前に approval preflight を評価し、hard blocker は PR 公開前に
+escalate する（既存 ready PR がある retry ではその PR は残る）。hard-block しなければ
+ready PR を作成し、PR 公開後に full merge gate
+で merge / transient leave-open / post-publish escalate を決める。設計は
 [`../superpowers/specs/2026-06-05-phase3-auto-merge-design.md`](../superpowers/specs/2026-06-05-phase3-auto-merge-design.md)。
 
 - **merge gate（pure・決定論的）**: `evaluateMergeGate`（`src/core/merge-gate.ts`）。
@@ -1571,11 +1594,16 @@ follow-up finding だけなら hitch は close できる。open な in-scope P0/
   **ファイル単位**（足すだけの別ファイルが削るファイルを隠せない）で、バランスした
   rename/refactor（削除数 == 追加数）は降格しない。両誤り方向で fail-safe（false-positive
   は人手 merge=安全 / false-negative は削除・skip シグナル単独と同等）。
-- **closeAndPr の分岐**（`src/hitch/orchestrator-runners.ts`）: PR 作成後、
-  `deps.autoMerge` があれば gate を評価する。`closeAndPr` の PR 結果と
-  `OrchestrationResult` は PR の draft 状態を `draft: boolean` として保持する。
-  outcome enum の値は不変で、draft PR の作成でも `outcome` は **`pr_created`** のまま
-  （CLI が `draft=true|false` を別フィールド表示）。
+- **closeAndPr の分岐**（`src/hitch/orchestrator-runners.ts`）: `deps.autoMerge`
+  があれば ready PR 作成前に approval preflight を評価する。preflight hard blocker
+  （`not_close_ready` / `consensus_not_approved` / `quorum_not_satisfied`）は
+  新規 PR 公開前に escalate し、`prUrl` は空になる。CI 待ち retry などで既存 PR が
+  ある場合、その PR は残る。hard-block しなければ PR を **non-draft** で作成し、
+  PR 作成後に full gate を評価する。`deps.autoMerge` 不在時は
+  従来どおり draft PR を作成する。`closeAndPr` の PR 結果と `OrchestrationResult`
+  は PR の draft 状態を `draft: boolean` として保持する。outcome enum の値は不変で、
+  draft PR の作成でも `outcome` は **`pr_created`** のまま（CLI が
+  `draft=true|false` を別フィールド表示）。
   - **PR タイトル（#103）**: `closeAndPr` は hitch title から **Conventional Commit** 形式の
     タイトル（`conventionalPrTitle`：hitch title が既に conventional ならそのまま、でなければ
     `fix:` を付与し `(run-<id>)` を付す）を作り、`createPullRequest({ title })` に渡す。
@@ -1585,8 +1613,7 @@ follow-up finding だけなら hitch は close できる。open な in-scope P0/
   - `canMerge` → `gh pr merge --match-head-commit <sha> --<method>`（idempotent:
     既マージ検出、**head commit に pin**: CI 判定前に取得した head SHA に固定し
     head が動けば拒否→escalate）で merge、operation audit（`operations`,
-    type=`merge`）に記録、outcome **`merged`**。auto-merge 有効時は PR を
-    **non-draft** で作成（draft は merge 不可）。CI 判定は `gh pr view --json
+    type=`merge`）に記録、outcome **`merged`**。CI 判定は `gh pr view --json
     headRefOid,statusCheckRollup` を `--ci-await-timeout`（既定 1200 秒）まで bounded
     poll する。各 poll の atomic snapshot で head OID != reviewed commit なら即 false
     （head moved, fail-closed）。非空 rollup の全 check が terminal（CheckRun
@@ -1595,7 +1622,8 @@ follow-up finding だけなら hitch は close できる。open な in-scope P0/
     `SUCCESS`）のみ green、いずれか failure/error は即 false。pending / empty rollup は
     poll interval 後に再評価し、timeout 到達・取得失敗・不明 shape は false（ABA race
     安全、不確定は fail-closed）。
-  - `hardBlocked` → **merge せず escalate**（fail-closed、hitch は `escalated`）。
+  - PR 公開後の `hardBlocked` → **merge せず、公開済み PR を残して escalate**
+    （fail-closed、hitch は `escalated`）。
   - transient（CI 未 green、または Tier-1/Tier-2）→ merge せず PR を残す
     （outcome `pr_created`）。**resumable な later-merge**: transient が
     **`ci_not_green` のみ**（再チェックで解決しうる temporal な blocker）なら hitch を
@@ -1604,8 +1632,9 @@ follow-up finding だけなら hitch は close できる。open な in-scope P0/
     の tip から解決）、CI が緑になっていれば merge する。`tier_not_auto_eligible`（tier は
     変わらない＝再チェック無意味）は従来どおり `closed`（人手 merge）。新 status /
     migration なしで `close_ready` を「PR up・CI 待ち」に二重利用する。
-  - **外部レビュー ingestion**（opt-in `--ingest-external-reviews`）: gate 評価前に
-    PR の外部レビュー verdict（codex App / Copilot / 人間）を fetch し、既知 state
+  - **外部レビュー ingestion**（opt-in `--ingest-external-reviews`）: preflight 通過後に
+    作成された PR について、post-publish full gate 評価前に外部レビュー verdict
+    （codex App / Copilot / 人間）を fetch し、既知 state
     （`approved` / `changes_requested` / `commented` / `dismissed` / `pending`）を
     v40 `external_review_events` ledger に全て記録する。ledger は観測用で gate 入力ではない。
     `reviewer_type` は login から決定論的に分類（`chatgpt-codex-connector`→`codex_app` /
@@ -1640,8 +1669,9 @@ follow-up finding だけなら hitch は close できる。open な in-scope P0/
 
 ### Copilot review（観測ステップ・opt-in・best-effort）
 
-PR 作成後・auto-merge 評価の**前**に、opt-in（`--request-copilot-review`、既定 OFF）
-で GitHub Copilot のコードレビューを best-effort でリクエストできる。これは純粋な
+PR 作成後（`--auto-merge` では preflight 通過後）・post-publish full merge gate の
+**前**に、opt-in（`--request-copilot-review`、既定 OFF）で GitHub Copilot のコードレビューを
+best-effort でリクエストできる。これは純粋な
 **観測ステップ**で、retry-then-skip（request 一時エラーは retry、timeout は skip）し、
 例外も握る（非 gating）。outcome は operation audit（`copilot-review`）に記録される
 だけで、**close / merge を一切 gate しない**――外部出力を状態遷移の根拠にしない、
