@@ -340,7 +340,6 @@ export async function runDomainCodingInner(
       timedOut: boolean;
     }> = [];
     let commandsRan = false;
-    let commandsPassed = true;
     if (
       dv.diff.ok &&
       dv.safetyStatus === "allowed" &&
@@ -370,7 +369,6 @@ export async function runDomainCodingInner(
         timedOut: r.timedOut,
       }));
       commandsRan = true;
-      commandsPassed = cmdRun.allPassed;
       await log.emit({
         type: "commands_completed",
         results: commandResults,
@@ -591,7 +589,12 @@ export async function runDomainCodingInner(
 
     // Status priority (evaluated against POST-command worktree if commands ran):
     //   diff failure > codex timeout > codex non-zero > policy violation
-    //   > enforced budget exceeded > command failure > needs_review
+    //   > enforced budget exceeded > needs_review
+    //
+    // policy.allowedCommands are an allowlist of commands the harness may run
+    // for diagnostics and post-command policy validation. Their non-zero exit is
+    // recorded in commandResults but is not itself a close gate; deterministic
+    // hitch gates are handled by `kind: command` close conditions.
     // safetyStatus is reported independently so callers can detect e.g.
     // "timeout AND scope violation" cases.
     const budgetExceeded = changeBudgetResult?.status === "exceeded";
@@ -608,8 +611,6 @@ export async function runDomainCodingInner(
       status = "failed-policy-violation";
     } else if (budgetExceeded) {
       status = "failed-budget-exceeded";
-    } else if (commandsRan && !commandsPassed) {
-      status = "failed-command";
     } else {
       status = "needs_review";
     }
@@ -650,6 +651,7 @@ export async function runDomainCodingInner(
         : {}),
       codexExitCode: codex.exitCode,
       codexTimedOut: codex.timedOut,
+      commandResults,
       codexStdoutTail,
       codexStderrTail,
       ...(codexEventsSummary !== "" ? { codexEventsSummary } : {}),
@@ -697,6 +699,7 @@ export async function runDomainCodingInner(
           : {}),
         codexExitCode: codex.exitCode,
         codexTimedOut: codex.timedOut,
+        commandResults,
         codexStdoutTail,
         codexStderrTail,
         ...(codexEventsSummary !== "" ? { codexEventsSummary } : {}),

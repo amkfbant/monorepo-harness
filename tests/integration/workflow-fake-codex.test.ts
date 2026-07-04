@@ -2235,7 +2235,7 @@ describe("runDomainCoding (fake codex)", () => {
     expect(r.safetyStatus).toBe("denied");
   });
 
-  it("flips to failed-command when an allowed command fails", async () => {
+  it("keeps allowed command failures advisory for coding runs", async () => {
     const root = mkdtempSync(join(tmpdir(), "harness-cmd-"));
     mkdirSync(join(root, "policies/repos"), { recursive: true });
     writeFileSync(
@@ -2276,8 +2276,18 @@ describe("runDomainCoding (fake codex)", () => {
       codexRunner: runner,
       now: new Date("2026-05-20T00:00:00Z"),
     });
-    expect(r.status).toBe("failed-command");
+    expect(r.status).toBe("needs_review");
     expect(r.commandResults[0]?.exitCode).not.toBe(0);
+    const summary = readFileSync(
+      join(root, "runs", r.runId, "summary.md"),
+      "utf8",
+    );
+    const reviewRequest = readFileSync(
+      join(root, "runs", r.runId, "review-request.md"),
+      "utf8",
+    );
+    expect(summary).toMatch(/Result: 0\/1 ok/);
+    expect(reviewRequest).toMatch(/Result: 0\/1 ok/);
   });
 
   it("T1: post-command ignored untracked is counted (F8 extension)", async () => {

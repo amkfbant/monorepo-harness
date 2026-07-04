@@ -141,6 +141,25 @@ describe("buildReviewRequest", () => {
     expect(md).toMatch(/untracked-files\.patch/);
   });
 
+  it("summarizes advisory command failures for reviewers", () => {
+    const md = buildReviewRequest({
+      ...BASE,
+      status: "needs_review",
+      safetyStatus: "allowed",
+      changedPaths: ["apps/user/profile.ts"],
+      untrackedPaths: [],
+      violations: [],
+      commandResults: [
+        { command: "npm test", exitCode: 0, durationMs: 1200, timedOut: false },
+        { command: "npm run lint", exitCode: 2, durationMs: 34, timedOut: false },
+      ],
+    });
+
+    expect(md).toMatch(/## Commands/);
+    expect(md).toMatch(/Result: 1\/2 ok/);
+    expect(md).toMatch(/`npm run lint`: exit 2, 34ms/);
+  });
+
   it("describes enforce=false breaches as review backstop audit", () => {
     const md = buildReviewRequest({
       ...BASE,

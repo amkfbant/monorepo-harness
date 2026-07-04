@@ -83,8 +83,9 @@ export interface RunMeta {
   reviewedAt?: string | null;
   /**
    * Per-command result for `policy.allowedCommands` invocation. Empty / absent
-   * when the policy specifies no commands. Any failure here flips status to
-   * `failed-command`.
+   * when the policy specifies no commands. Non-zero exits are diagnostic for
+   * coding runs; `kind: command` hitch close conditions are the deterministic
+   * command gate.
    */
   commandResults?: Array<{
     command: string;
