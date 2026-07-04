@@ -209,6 +209,7 @@ describe("CLI help surface golden (#125 behavior-zero gate)", () => {
         show
         timeline
         artifacts
+        artifact-get
       workflow
         reviewed-run
         help

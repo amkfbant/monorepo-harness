@@ -1,6 +1,6 @@
-import { readFile, readdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
+import { constants, existsSync, type Stats } from "node:fs";
+import { isAbsolute, join, normalize, relative } from "node:path";
 import type { RunMeta } from "../logging/run-log.js";
 import { findBacklogItemForRun } from "./backlog.js";
 import {
@@ -8,6 +8,9 @@ import {
   readRunEventsFromDb,
   listRunArtifactsFromDb,
   readRunSourceModeFromDb,
+  readRunArtifactBodyFromDb,
+  type ArtifactBodySelector,
+  type RunArtifactBodyDbResult,
 } from "./run-db-reader.js";
 
 /**
@@ -102,6 +105,14 @@ export class RunViewError extends Error {
     super(message);
     this.name = "RunViewError";
   }
+}
+
+export interface RunArtifactBody {
+  artifactId: string | null;
+  relativePath: string | null;
+  body: Buffer;
+  source: "db" | "files";
+  bodyStatus?: string | null;
 }
 
 // Same shape as review-lister's RUN_DIR_RE — a `run-` prefixed segment
@@ -379,6 +390,96 @@ export async function renderRunArtifacts(
   return lines.join("\n");
 }
 
+/** Full body for one artifact, following the same source mode as run viewers. */
+export async function readRunArtifactBody(
+  runsDir: string,
+  runId: string,
+  selector: ArtifactBodySelector,
+  dbPath?: string,
+  source: RunViewSource = "auto",
+): Promise<RunArtifactBody> {
+  assertRunId(runId);
+  if (selector.kind === "artifactId" && source === "files") {
+    throw new RunViewError(
+      "run artifact-get --source files requires --name, not --artifact-id",
+    );
+  }
+  const safeName =
+    selector.kind === "name"
+      ? normalizeArtifactRelativePath(selector.value)
+      : null;
+  const normalizedSelector: ArtifactBodySelector =
+    safeName === null ? selector : { kind: "name", value: safeName };
+  await readMeta(runsDir, runId, dbPath, source);
+
+  if (shouldPreferDbForRun(dbPath, runId, source) && dbPath !== undefined) {
+    const fromDb = readRunArtifactBodyFromDb(
+      dbPath,
+      runId,
+      normalizedSelector,
+    );
+    if (fromDb !== null && fromDb.status !== "run_not_found") {
+      const fileBacked =
+        source !== "db"
+          ? await readFileBackedDbArtifact(runsDir, runId, fromDb)
+          : null;
+      if (fileBacked !== null) return fileBacked;
+      return artifactBodyFromDbResult(runId, normalizedSelector, fromDb);
+    }
+  }
+
+  if (source !== "db" && safeName !== null) {
+    if (dbPath !== undefined) {
+      const fromDb = readRunArtifactBodyFromDb(
+        dbPath,
+        runId,
+        normalizedSelector,
+      );
+      if (
+        fromDb !== null &&
+        fromDb.status === "body_unavailable" &&
+        isHardBodyRefusal(fromDb.reason)
+      ) {
+        return artifactBodyFromDbResult(runId, normalizedSelector, fromDb);
+      }
+    }
+    const body = await readArtifactFileBody(runsDir, runId, safeName);
+    if (body !== null) {
+      return {
+        artifactId: null,
+        relativePath: safeName,
+        body,
+        source: "files",
+      };
+    }
+  }
+
+  if (source !== "files" && dbPath !== undefined) {
+    const fromDb = readRunArtifactBodyFromDb(
+      dbPath,
+      runId,
+      normalizedSelector,
+    );
+    if (fromDb !== null && fromDb.status !== "run_not_found") {
+      const fileBacked =
+        source !== "db"
+          ? await readFileBackedDbArtifact(runsDir, runId, fromDb)
+          : null;
+      if (fileBacked !== null) return fileBacked;
+      return artifactBodyFromDbResult(runId, normalizedSelector, fromDb);
+    }
+  }
+
+  if (source === "files") {
+    throw new RunViewError(
+      `artifact ${normalizedSelector.value} not found in run dir (--source files)`,
+    );
+  }
+  throw new RunViewError(
+    `artifact ${normalizedSelector.value} not found for run ${runId}`,
+  );
+}
+
 /**
  * Artifact listing for a run: the run dir's files when it exists, else the
  * `artifacts` manifest from the DB so a DB-only / cleaned run still lists.
@@ -436,4 +537,189 @@ async function artifactList(runDir: string): Promise<string[]> {
     out.push(`${d}/ (${count} ${count === 1 ? "entry" : "entries"})`);
   }
   return out.length > 0 ? out : ["(none)"];
+}
+
+function normalizeArtifactRelativePath(value: string): string {
+  const rawParts = value.split("/");
+  if (
+    value.includes("\0") ||
+    value.includes("\\") ||
+    isAbsolute(value) ||
+    rawParts.includes("..") ||
+    rawParts.some((part) => part.startsWith("."))
+  ) {
+    throw new RunViewError(`invalid artifact name: ${JSON.stringify(value)}`);
+  }
+  const normalized = normalize(value);
+  if (
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith("../") ||
+    normalized.split("/").some((part) => part.startsWith("."))
+  ) {
+    throw new RunViewError(`invalid artifact name: ${JSON.stringify(value)}`);
+  }
+  return normalized;
+}
+
+async function readArtifactFileBody(
+  runsDir: string,
+  runId: string,
+  safeName: string,
+): Promise<Buffer | null> {
+  const runDir = join(runsDir, runId);
+  const filePath = join(runDir, safeName);
+  let runDirStat;
+  try {
+    runDirStat = await lstat(runDir);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new RunViewError(
+      `run dir for ${runId} is unreadable: ${(e as Error).message}`,
+    );
+  }
+  if (runDirStat.isSymbolicLink()) {
+    throw new RunViewError(`run dir for ${runId} is a symlink`);
+  }
+  if (!runDirStat.isDirectory()) {
+    throw new RunViewError(`run dir for ${runId} is not a directory`);
+  }
+  const st = await lstatArtifactPath(runDir, safeName);
+  if (st === null) return null;
+  if (st.isSymbolicLink()) {
+    throw new RunViewError(`artifact ${safeName} is a symlink`);
+  }
+  if (!st.isFile()) {
+    throw new RunViewError(`artifact ${safeName} is not a regular file`);
+  }
+  const [runsDirReal, runDirReal, fileReal] = await Promise.all([
+    realpath(runsDir),
+    realpath(runDir),
+    realpath(filePath),
+  ]);
+  if (!isWithinDirectory(runDirReal, runsDirReal)) {
+    throw new RunViewError(`run dir for ${runId} resolves outside runs dir`);
+  }
+  if (!isWithinDirectory(fileReal, runDirReal)) {
+    throw new RunViewError(`artifact ${safeName} resolves outside the run dir`);
+  }
+  let handle;
+  try {
+    handle = await open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = await handle.stat();
+    if (!opened.isFile() || !sameFileIdentity(st, opened)) {
+      throw new RunViewError(`artifact ${safeName} changed while opening`);
+    }
+    return await handle.readFile();
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "ELOOP") {
+      throw new RunViewError(`artifact ${safeName} is a symlink`);
+    }
+    throw e;
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function readFileBackedDbArtifact(
+  runsDir: string,
+  runId: string,
+  result: RunArtifactBodyDbResult,
+): Promise<RunArtifactBody | null> {
+  if (result.status !== "file_backed" || result.relativePath === null) {
+    return null;
+  }
+  const fileName = normalizeArtifactRelativePath(result.relativePath);
+  const body = await readArtifactFileBody(runsDir, runId, fileName);
+  if (body === null) return null;
+  return {
+    artifactId: result.artifactId,
+    relativePath: fileName,
+    body,
+    source: "files",
+  };
+}
+
+async function lstatArtifactPath(
+  runDir: string,
+  safeName: string,
+): Promise<Stats | null> {
+  const parts = safeName.split("/");
+  let current = runDir;
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i];
+    if (part === undefined) return null;
+    current = join(current, part);
+    let st: Stats;
+    try {
+      st = await lstat(current);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw new RunViewError(
+        `artifact ${safeName} is unreadable: ${(e as Error).message}`,
+      );
+    }
+    if (st.isSymbolicLink()) {
+      throw new RunViewError(`artifact ${safeName} is a symlink`);
+    }
+    if (i < parts.length - 1 && !st.isDirectory()) {
+      throw new RunViewError(
+        `artifact ${safeName} contains a non-directory component`,
+      );
+    }
+    if (i === parts.length - 1) return st;
+  }
+  return null;
+}
+
+function sameFileIdentity(a: Stats, b: Stats): boolean {
+  return a.dev === b.dev && a.ino === b.ino;
+}
+
+function isWithinDirectory(child: string, parent: string): boolean {
+  const rel = relative(parent, child);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function isHardBodyRefusal(
+  reason: Extract<
+    RunArtifactBodyDbResult,
+    { status: "body_unavailable" }
+  >["reason"],
+): boolean {
+  return (
+    reason === "redacted" ||
+    reason === "secret_suspect" ||
+    reason === "quarantined"
+  );
+}
+
+function artifactBodyFromDbResult(
+  runId: string,
+  selector: ArtifactBodySelector,
+  result: Exclude<RunArtifactBodyDbResult, { status: "run_not_found" }>,
+): RunArtifactBody {
+  if (result.status === "ok") {
+    return {
+      artifactId: result.artifact.artifactId,
+      relativePath: result.artifact.relativePath,
+      body: result.artifact.body,
+      source: "db",
+      bodyStatus: result.artifact.bodyStatus,
+    };
+  }
+  if (result.status === "artifact_not_found") {
+    throw new RunViewError(
+      `artifact ${selector.value} not found for run ${runId}`,
+    );
+  }
+  if (result.status === "file_backed") {
+    throw new RunViewError(
+      `artifact ${result.artifactId} body unavailable: unsupported_storage`,
+    );
+  }
+  throw new RunViewError(
+    `artifact ${result.artifactId} body unavailable: ${result.reason}`,
+  );
 }

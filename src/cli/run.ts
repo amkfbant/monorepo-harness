@@ -1,6 +1,16 @@
 #!/usr/bin/env node
-import { getHarnessRoot, rejectProjectRepoIdMix, parseChangeBudgetOverride, cmdRun, cmdReviewedRun, parseSource, runViewAction } from "./run-core.js";
+import {
+  getHarnessRoot,
+  rejectProjectRepoIdMix,
+  parseChangeBudgetOverride,
+  cmdRun,
+  cmdReviewedRun,
+  parseSource,
+  runViewAction,
+} from "./run-core.js";
 import process from "node:process";
+import { constants } from "node:fs";
+import { open } from "node:fs/promises";
 
 import { Command } from "commander";
 import { harnessPaths } from "../config/paths.js";
@@ -8,7 +18,13 @@ import { harnessVersion } from "../config/version.js";
 
 import { findTransientLeaseCause } from "../workspace/db-domain-lock.js";
 
-import { renderRunShow, renderRunTimeline, renderRunArtifacts, RunViewError } from "../core/run-viewer.js";
+import {
+  readRunArtifactBody,
+  renderRunShow,
+  renderRunTimeline,
+  renderRunArtifacts,
+  RunViewError,
+} from "../core/run-viewer.js";
 
 import { DEFAULT_MAX_ATTEMPTS } from "../core/rerun.js";
 
@@ -169,6 +185,83 @@ runCmd
     "auto",
   )
   .action(runViewAction(renderRunArtifacts));
+runCmd
+  .command("artifact-get")
+  .description("write one run artifact body to stdout or --out")
+  .requiredOption("--run-id <id>", "target run identifier")
+  .option("--name <relativePath>", "artifact relative_path to read")
+  .option("--artifact-id <id>", "artifact_id to read")
+  .option("--out <path>", "write body to a file instead of stdout")
+  .option(
+    "--source <which>",
+    "where to read from: auto | db | files (default auto)",
+    "auto",
+  )
+  .action(async (raw: Record<string, unknown>) => {
+    const hasName = raw.name !== undefined;
+    const hasArtifactId = raw.artifactId !== undefined;
+    if (hasName === hasArtifactId) {
+      process.stderr.write(
+        "harness error: run artifact-get requires exactly one of --name or --artifact-id\n",
+      );
+      process.exit(1);
+    }
+
+    const paths = harnessPaths(getHarnessRoot());
+    const source = parseSource(raw.source);
+    const selector = hasName
+      ? { kind: "name" as const, value: String(raw.name) }
+      : { kind: "artifactId" as const, value: String(raw.artifactId) };
+    try {
+      const artifact = await readRunArtifactBody(
+        paths.runsDir,
+        String(raw.runId),
+        selector,
+        paths.dbPath,
+        source,
+      );
+      if (raw.out !== undefined) {
+        await writeArtifactOutputFile(String(raw.out), artifact.body);
+      } else {
+        process.stdout.write(artifact.body);
+      }
+      if (artifact.bodyStatus === "truncated") {
+        process.stderr.write(
+          `harness warning: artifact ${selector.value} body is truncated\n`,
+        );
+      }
+    } catch (e) {
+      if (e instanceof RunViewError) {
+        process.stderr.write(`harness error: ${(e as Error).message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
+  });
+
+async function writeArtifactOutputFile(path: string, body: Buffer): Promise<void> {
+  let handle;
+  try {
+    handle = await open(
+      path,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_TRUNC |
+        constants.O_NOFOLLOW,
+      0o600,
+    );
+    await handle.chmod(0o600);
+    await handle.writeFile(body);
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "ELOOP") {
+      throw new RunViewError(`--out must not be a symlink: ${path}`);
+    }
+    throw e;
+  } finally {
+    await handle?.close();
+  }
+}
 
 const workflowCmd = program
   .command("workflow")

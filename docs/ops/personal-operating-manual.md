@@ -19,7 +19,7 @@ harness inbox               # needs_review / failed / cleanup / knowledge の詳
 1. **failed-* を最初に見る** — `harness run show --run-id <id>` で原因を把握。`failed-policy-violation` なら knowledge candidate を確認（後述）。
 2. **needs_review を片付ける** — `harness review auto --run-id <id>` でレビュー decision を生成 → `harness review process --run-id <id>` で適用。
 3. **changes_requested を rerun** — `harness rerun --from-review <id>`。ただし下記 maxAttempts ルールに従う。
-4. 1 run の詳細を見たいときは常に `harness run show` / `run timeline` / `run artifacts`。
+4. 1 run の詳細を見たいときは常に `harness run show` / `run timeline` / `run artifacts` / `run artifact-get`。
 
 ---
 
