@@ -2,6 +2,10 @@ import { existsSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { openDbReadonly } from "../db/connection.js";
 import { openManagedDb } from "../db/managed-connection.js";
+import { readArtifactBlob } from "../db/artifact-blobs.js";
+import { findBlobStore } from "../db/blob-stores.js";
+import { reconstructRunArtifactBodyFromDb } from "../db/run-reconstruction.js";
+import { LocalBlobStore } from "../storage/local-blob-store.js";
 import type { RunMeta } from "../logging/run-log.js";
 
 /**
@@ -136,6 +140,62 @@ export function listRunArtifactsFromDb(
   }
 }
 
+export type ArtifactBodySelector =
+  | { kind: "name"; value: string }
+  | { kind: "artifactId"; value: string };
+
+export interface RunArtifactBodyFromDb {
+  artifactId: string;
+  relativePath: string | null;
+  body: Buffer;
+  bodyStatus: string | null;
+  storage: string;
+}
+
+export type RunArtifactBodyDbResult =
+  | { status: "ok"; artifact: RunArtifactBodyFromDb }
+  | { status: "run_not_found" }
+  | { status: "artifact_not_found" }
+  | { status: "file_backed"; artifactId: string; relativePath: string | null }
+  | {
+      status: "body_unavailable";
+      reason:
+        | "redacted"
+        | "secret_suspect"
+        | "quarantined"
+        | "unsupported_storage"
+        | "blob_missing"
+        | "missing_blob_reference";
+      artifactId: string;
+      relativePath: string | null;
+    };
+
+/** Full body for one DB-canonical artifact, including attached archives. */
+export function readRunArtifactBodyFromDb(
+  dbPath: string,
+  runId: string,
+  selector: ArtifactBodySelector,
+): RunArtifactBodyDbResult | null {
+  if (!existsSync(dbPath)) return null;
+  const dbHandle = openManagedDb({ dbPath, readonly: true });
+  const db = dbHandle.db;
+  try {
+    const result = readArtifactBodyFromSingleDb(db, runId, selector);
+    if (result.status !== "run_not_found") return result;
+    const archived = withArchives(db, (archiveDb) => {
+      const archiveResult = readArtifactBodyFromSingleDb(
+        archiveDb,
+        runId,
+        selector,
+      );
+      return archiveResult.status === "run_not_found" ? null : archiveResult;
+    });
+    return archived ?? result;
+  } finally {
+    dbHandle.close();
+  }
+}
+
 function attachedArchivePaths(db: Database.Database): string[] {
   const present = db
     .prepare(
@@ -246,4 +306,217 @@ function listRunArtifactsFromArchives(
       .all(runId) as { relative_path: string | null; kind: string }[];
     return rows.map((r) => r.relative_path ?? `(${r.kind})`);
   });
+}
+
+interface ArtifactBodyRow {
+  artifact_id: string;
+  relative_path: string | null;
+  storage: string;
+  blob_sha256: string | null;
+  body_status: string | null;
+  redacted: number;
+  secret_suspect: number;
+  quarantined: number;
+}
+
+function readArtifactBodyFromSingleDb(
+  db: Database.Database,
+  runId: string,
+  selector: ArtifactBodySelector,
+): RunArtifactBodyDbResult {
+  const present = db
+    .prepare("SELECT 1 FROM runs WHERE run_id = ?")
+    .get(runId);
+  if (present === undefined) return { status: "run_not_found" };
+  if (!tableExists(db, "artifacts")) return { status: "artifact_not_found" };
+
+  const storageExpr = artifactSelectExpr(db, "storage", "'file'");
+  const blobShaExpr = artifactSelectExpr(db, "blob_sha256", "NULL");
+  const bodyStatusExpr = artifactSelectExpr(db, "body_status", "NULL");
+  const redactedExpr = artifactFlagSelectExpr(db, "redacted");
+  const secretSuspectExpr = artifactFlagSelectExpr(db, "secret_suspect");
+  const quarantinedExpr = artifactFlagSelectExpr(db, "quarantined");
+  const row =
+    selector.kind === "artifactId"
+      ? db
+          .prepare(
+            `SELECT artifact_id, relative_path, ${storageExpr},
+                    ${blobShaExpr}, ${bodyStatusExpr}, ${redactedExpr},
+                    ${secretSuspectExpr}, ${quarantinedExpr}
+               FROM artifacts
+              WHERE run_id = ? AND artifact_id = ?
+              LIMIT 1`,
+          )
+          .get(runId, selector.value)
+      : db
+          .prepare(
+            `SELECT artifact_id, relative_path, ${storageExpr},
+                    ${blobShaExpr}, ${bodyStatusExpr}, ${redactedExpr},
+                    ${secretSuspectExpr}, ${quarantinedExpr}
+               FROM artifacts
+              WHERE run_id = ? AND relative_path = ?
+              LIMIT 1`,
+          )
+          .get(runId, selector.value);
+  const artifact = row as ArtifactBodyRow | undefined;
+  if (artifact === undefined) return { status: "artifact_not_found" };
+
+  const unavailable = (
+    reason: Extract<
+      RunArtifactBodyDbResult,
+      { status: "body_unavailable" }
+    >["reason"],
+  ): RunArtifactBodyDbResult => ({
+    status: "body_unavailable",
+    reason,
+    artifactId: artifact.artifact_id,
+    relativePath: artifact.relative_path,
+  });
+  if (artifact.redacted === 1) return unavailable("redacted");
+  if (artifact.secret_suspect === 1) return unavailable("secret_suspect");
+  if (
+    artifact.quarantined === 1 &&
+    shouldRefuseQuarantinedArtifactBody(artifact.relative_path)
+  ) {
+    return unavailable("quarantined");
+  }
+  if (artifact.storage === "file") {
+    return {
+      status: "file_backed",
+      artifactId: artifact.artifact_id,
+      relativePath: artifact.relative_path,
+    };
+  }
+  if (artifact.storage !== "db" && artifact.storage !== "external") {
+    return unavailable("unsupported_storage");
+  }
+  if (artifact.blob_sha256 === null) {
+    const reconstructed = reconstructRunArtifactBodyFromDb(
+      db,
+      runId,
+      artifact.relative_path,
+    );
+    if (reconstructed !== null) {
+      return {
+        status: "ok",
+        artifact: {
+          artifactId: artifact.artifact_id,
+          relativePath: artifact.relative_path,
+          body: reconstructed,
+          bodyStatus: artifact.body_status,
+          storage: artifact.storage,
+        },
+      };
+    }
+    return unavailable("missing_blob_reference");
+  }
+
+  const body =
+    artifact.storage === "external"
+      ? readExternalArtifactBlob(db, artifact.blob_sha256)
+      : readArtifactBlob(db, artifact.blob_sha256);
+  if (body === null) return unavailable("blob_missing");
+  return {
+    status: "ok",
+    artifact: {
+      artifactId: artifact.artifact_id,
+      relativePath: artifact.relative_path,
+      body,
+      bodyStatus: artifact.body_status,
+      storage: artifact.storage,
+    },
+  };
+}
+
+function artifactSelectExpr(
+  db: Database.Database,
+  column: "storage" | "blob_sha256" | "body_status",
+  fallbackSql: string,
+): string {
+  return artifactColumnExists(db, column)
+    ? column
+    : `${fallbackSql} AS ${column}`;
+}
+
+function artifactFlagSelectExpr(
+  db: Database.Database,
+  column: "redacted" | "secret_suspect" | "quarantined",
+): string {
+  return artifactColumnExists(db, column) ? column : `0 AS ${column}`;
+}
+
+function artifactColumnExists(
+  db: Database.Database,
+  column: string,
+): boolean {
+  const rows = db.prepare("PRAGMA table_info(artifacts)").all() as Array<{
+    name: string;
+  }>;
+  return rows.some((r) => r.name === column);
+}
+
+function shouldRefuseQuarantinedArtifactBody(
+  relativePath: string | null,
+): boolean {
+  if (relativePath === null) return true;
+  return (
+    relativePath === "review-decision.yaml" ||
+    relativePath === "review-auto-error.json" ||
+    relativePath === "reviewer-agent.out.log" ||
+    relativePath === "reviewer-agent.err.log" ||
+    relativePath === "reviewer-agent.events.jsonl" ||
+    relativePath.startsWith("reviewers/") ||
+    relativePath.startsWith("review-evaluations/")
+  );
+}
+
+function readExternalArtifactBlob(
+  db: Database.Database,
+  blobSha256: string,
+): Buffer | null {
+  if (
+    !tableExists(db, "external_artifact_blobs") ||
+    !tableExists(db, "blob_stores")
+  ) {
+    return null;
+  }
+  const external = db
+    .prepare(
+      `SELECT sha256, store_id, uri, status
+         FROM external_artifact_blobs
+        WHERE sha256 = ?`,
+    )
+    .get(blobSha256) as
+    | { sha256: string; store_id: string; uri: string; status: string }
+    | undefined;
+  if (external === undefined || external.status !== "available") return null;
+
+  const storeRow = findBlobStore(db, external.store_id);
+  if (storeRow === null || storeRow.storeType !== "local") return null;
+  const config = parseJson<{ root?: unknown }>(storeRow.configJson, {});
+  if (typeof config.root !== "string") return null;
+
+  try {
+    return new LocalBlobStore({ root: config.root }).getSync({
+      sha256: blobSha256,
+      uri: external.uri,
+    });
+  } catch {
+    return null;
+  }
+}
+
+function tableExists(db: Database.Database, table: string): boolean {
+  const row = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table);
+  return row !== undefined;
+}
+
+function parseJson<T>(text: string, fallback: T): T {
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return fallback;
+  }
 }

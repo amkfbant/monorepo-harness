@@ -45,7 +45,7 @@ docs/
 | `harness mcp serve` | coding agent 向け MCP server（tools / resources / prompts・[`specs/mcp.md`](./specs/mcp.md)） |
 | `harness index` | Phase 8-7 で撤去（`harness.sqlite` read model に置換）。exit 1 の stub のみ残置 |
 | `harness pr create --run-id <approved-id>` | approved run を GitHub draft PR にする（Phase 3-6） |
-| `harness run show / timeline / artifacts` | 1 run の状態を read-only で集約表示（Phase 4-1） |
+| `harness run show / timeline / artifacts / artifact-get` | 1 run の状態と artifact body を read-only で集約表示（Phase 4-1） |
 | `harness inbox` | 今日見るべきもの（needs_review / changes_requested / failed / cleanup / knowledge）を集約（Phase 4-2） |
 | `harness backlog add/list/show/run/done/defer` | 個人 backlog。run と双方向リンク（Phase 4-3） |
 | `harness maintenance check / cleanup` | stale lock / orphan worktree 等の残骸を検出・掃除（Phase 4-4） |

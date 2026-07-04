@@ -1088,7 +1088,7 @@ entry も含める）。scope 無しの file-based ビューは DB-only の oper
 出る（scoped inbox は常に全 section を返す）。scope 無しは従来の file-based ビュー
 （cleanup section は scope 経路では worktree 検査をしないため非掲載）。
 
-## `harness run show / timeline / artifacts`
+## `harness run show / timeline / artifacts / artifact-get`
 
 1 つの run の状態を読むための read-only サブコマンド（Phase 4-1）。
 
@@ -1096,11 +1096,14 @@ entry も含める）。scope 無しの file-based ビューは DB-only の oper
 harness run show --run-id <id>       # status / files / commands / review / PR / artifacts を一画面集約
 harness run timeline --run-id <id>   # events.jsonl を順序付きで人間向けに整形
 harness run artifacts --run-id <id>  # run dir の artifact ファイル一覧
+harness run artifact-get --run-id <id> --name final-diff.patch [--out path]
+harness run artifact-get --run-id <id> --artifact-id <artifact_id>
 ```
 
 - `run show`: `meta.json` から status / domain / safetyStatus / reviewer / parent / root / attempt / 変更ファイル数 / commands / PR を表示。backlog item は `backlog/` を逆引きして表示（`findBacklogItemForRun`）。個々の artifact が欠損していても落ちない
 - `run timeline`: `events.jsonl` を 1 行 1 イベントの順序付きリストに整形（events は wall-clock time を持たないため順序＝時系列。timestamp を持つイベントは併記）
 - `run artifacts`: run dir 直下のファイルを列挙
+- `run artifact-get`: artifact body を stdout（または `--out`、既存/新規を問わず書き込み前に `0600`）へ書く。`--name` と `--artifact-id` はちょうど 1 つだけ指定する。`storage='db'` は chunk/gzip を復元し、`storage='external'` は configured local blob store から読む。bodyless DB sidecar（`meta.json` / `events.jsonl` / `review-decision.yaml`）は DB から再構成する。`storage='file'` の artifact id は `auto` で relative_path に解決して run dir から読む。`redacted` / `secret_suspect` / prior-review 系 `quarantined` の body は返さない（v35 grandfathered recoverable rows はこれだけで拒否しない）。`--source files` では `--name` のみ受け付け、backslash / dotfile / traversal / symlink / run dir 外へ解決される path は拒否する
 
 Exit code: `0` 成功 / `1` invalid runId・run 不在・meta.json 破損 / `2` 予期しない例外。
 
@@ -2032,11 +2035,13 @@ harness db export-files --all
 
 shared maintenance lock。
 
-### `harness run show` / `harness run artifacts`（Phase 10）
+### `harness run show` / `harness run artifacts` / `harness run artifact-get`（Phase 10）
 
 ```bash
 harness run show <runId> [--source db|files|auto]      # default = auto
 harness run artifacts <runId> [--source db|files|auto] # default = auto
+harness run artifact-get --run-id <runId> --name <relative_path> [--out <path>] [--source db|files|auto]
+harness run artifact-get --run-id <runId> --artifact-id <artifact_id> [--out <path>] [--source db|auto]
 ```
 
 `--source auto` の resolution:
