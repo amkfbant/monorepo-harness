@@ -237,6 +237,23 @@ PRs, or persist course orchestration run rows. The production hitch runtime is
 created without a publisher and calls `HitchOrchestrator.run(...,
 stopAtCloseReady: true)`, so a ready hitch stops at `close_ready`.
 
+This drive-only stop is used by `course orchestrate` and other drive-only callers
+such as `hitch finding classify --then-rerun`; it is not the direct
+`harness hitch orchestrate <hitch-id>` terminal path. A direct invocation does
+have a publisher; when the hitch's required auto-verify close conditions all pass
+and no required operator gate is pending, `close_ready` maps to the terminal
+`close_and_pr` action. By default that action creates a draft PR; with
+`--auto-merge`, it first evaluates the merge gate approval preflight. A preflight
+hard blocker escalates before new PR publication; if a previous retryable pass
+already published a ready PR, that PR remains open. Otherwise it creates a ready
+PR, then the full merge gate may merge it, leave it open for transient blockers,
+or escalate after publication if post-publish facts hard-block the merge. If a
+course phase is meant to produce a reviewed diff but hold PR publication for
+later aggregation, include a required operator-owned close condition such as
+`kind: manual` (or `kind: operation_status` with `metadata.operationId`).
+`kind: review_consensus` keeps the coder/reviewer loop from closing vacuously,
+but it is still auto-verify and does not stop PR creation.
+
 ### Per-phase dispatch
 
 `decideCoursePhaseAction` is a pure function over phase declared status, leaf-ness,

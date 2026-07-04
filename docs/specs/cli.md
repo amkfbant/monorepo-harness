@@ -500,6 +500,21 @@ harness hitch await-merge [<hitch-id>] --repo <path> [--all] [--repo-id <id>] \
 harness hitch summary --course <id> [--since <iso>] [--until <iso>] [--status <status>] [--domain <domain>] [--json] [--out <path>]
 ```
 
+`hitch orchestrate` は publisher を持つ通常の hitch driver であり、convergence が
+`close_ready` に達すると `close_and_pr` を実行する。既定では draft PR を作成し、
+`--auto-merge` 指定時はまず merge gate の approval preflight を評価する。preflight
+の hard blocker は新規 PR 作成前に escalate する（CI 待ちなどで既存 ready PR が
+ある retry では、その既存 PR は残る）。hard-block しなければ ready PR を作成し、
+その後の full merge gate が通れば merge、transient blocker なら PR を残し、
+post-publish hard blocker が出れば PR 公開済みのまま escalate する。PR 作成を止めて
+diff を後で集約したい場合は、hitch の close 条件に required な operator gate
+（例: `kind: manual`。`kind: operation_status` を使う場合は `metadata.operationId` 必須）
+を入れて operator wait で止める。
+`kind: review_consensus` は auto-verify close 条件なので coder/reviewer ループは
+要求するが、PR 作成を止める gate にはならない。`course orchestrate` と
+`hitch finding classify --then-rerun` は drive-only caller として `stopAtCloseReady`
+を使うため、同じ `close_ready` でも PR を開かず停止する。
+
 `hitch status --json` は session / findings / convergence decisions /
 close checks / current convergence に加え、`lifecycleEvents`（`closed` /
 `cancelled` / `reopened` / `pr_adopted` / `updated` / `diverging_recovered` の
@@ -704,12 +719,15 @@ escalated）まで bounded loop（`--max-steps`、既定 50）で自律駆動す
 は次の action のみ表示し実行しない。PR 作成を伴う結果では、typed outcome の値は
 `pr_created` / `merged` のまま変えず、one-line 出力に `draft=true|false` を別フィールド
 として表示する（例: `outcome=pr_created draft=true pr=<url>`）。**`--auto-merge`（既定 OFF）** を付けると
-terminal の PR 作成後に merge gate（close-ready ∧ consensus approved(quorum) ∧
-CI green、または human override）を評価し、満たせば `gh pr merge` で自動マージ
-（`--merge-method`、既定 squash）。CI は `--ci-await-timeout` 秒（既定 `1200`）
-まで pending / empty rollup を poll し、timeout・head move・terminal failure・取得失敗は
-fail-closed。gate が hard 未達なら merge せず escalate（fail-closed）。merge は operation
-audit に記録される。詳細は
+ready PR を作成する前に merge gate の approval preflight（close-ready ∧
+（consensus approved(quorum) または human override））を評価し、preflight hard blocker は PR
+公開前に escalate する（既存 ready PR がある retry ではその PR は残る）。hard-block
+しなければ ready PR を作成し、PR 公開後に full
+merge gate（close-ready ∧ approval ∧ CI green ∧ tier eligible）を再評価して、満たせば `gh pr merge`
+で自動マージ（`--merge-method`、既定 squash）。CI は `--ci-await-timeout` 秒（既定
+`1200`）まで pending / empty rollup を poll し、timeout・head move・terminal
+failure・取得失敗は fail-closed。post-publish hard blocker は公開済み PR を残して
+escalate し、transient blocker は merge せず PR を残す。merge は operation audit に記録される。詳細は
 [`workflow.md`](./workflow.md) の「Phase 3 — auto-merge」。
 
 **workspace 自動リンク（best-effort）**: `--repo` が agent worktree（branch が
@@ -721,13 +739,14 @@ audit に記録される。詳細は
 `workspace=<agent>`。
 
 **`--request-copilot-review`（既定 OFF・非 gating）** を付けると、closeAndPr で PR
-作成後・auto-merge 前に best-effort で Copilot review をリクエストする。outcome は
-operation audit（`copilot-review`）に記録されるだけで、close / merge を一切 gate
-しない（例外も握る）。挙動は [`harness pr request-review`](#harness-pr-request-review)
-と同じ。
+作成後（`--auto-merge` では preflight 通過後）・post-publish full merge gate 前に
+best-effort で Copilot review をリクエストする。outcome は operation audit
+（`copilot-review`）に記録されるだけで、close / merge を一切 gate しない（例外も握る）。
+挙動は [`harness pr request-review`](#harness-pr-request-review) と同じ。
 
 **`--ingest-external-reviews`（既定 OFF・`--auto-merge` 時のみ）** を付けると、
-auto-merge gate 評価前に PR の外部レビュー verdict（codex App / Copilot）を fetch し、
+preflight 通過後に作成された PR について、post-publish full merge gate 評価前に
+外部レビュー verdict（codex App / Copilot）を fetch し、
 既知 state（`approved` / `changes_requested` / `commented` / `dismissed` / `pending`）を
 v40 `external_review_events` ledger に全て記録する。ledger は観測用で auto-merge gate の
 入力ではない。そのうえで **`CHANGES_REQUESTED`** だけを **unknown-scope の advisory finding**
