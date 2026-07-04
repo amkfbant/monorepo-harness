@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.20](https://github.com/amkfbant/monorepo-harness/compare/v0.7.19...v0.7.20) (2026-07-04)
+
+
+### Bug Fixes
+
+* **convergence:** keep allow-command failures advisory ([e08edfc](https://github.com/amkfbant/monorepo-harness/commit/e08edfcf5037ac3899c33213ca9b98800831874a)), closes [#423](https://github.com/amkfbant/monorepo-harness/issues/423)
+
 ## [0.7.19](https://github.com/amkfbant/monorepo-harness/compare/v0.7.18...v0.7.19) (2026-07-04)
 
 
