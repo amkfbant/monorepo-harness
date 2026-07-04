@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.19](https://github.com/amkfbant/monorepo-harness/compare/v0.7.18...v0.7.19) (2026-07-04)
+
+
+### Features
+
+* **cli:** add run artifact-get ([c079a41](https://github.com/amkfbant/monorepo-harness/commit/c079a41df5275036f21a5c828efb605914ab54b6)), closes [#421](https://github.com/amkfbant/monorepo-harness/issues/421)
+
 ## [0.7.18](https://github.com/amkfbant/monorepo-harness/compare/v0.7.17...v0.7.18) (2026-07-04)
 
 
