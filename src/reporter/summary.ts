@@ -31,10 +31,18 @@ export interface SummaryInputs {
   changeBudget?: ChangeBudgetReport;
   codexExitCode: number;
   codexTimedOut: boolean;
+  commandResults?: readonly CommandReport[];
   codexStdoutTail: string;
   codexStderrTail: string;
   codexEventsSummary?: string;
   diffCollectionError?: string;
+}
+
+interface CommandReport {
+  command: string;
+  exitCode: number;
+  durationMs: number;
+  timedOut: boolean;
 }
 
 function fencedRedactedTail(s: string): string[] {
@@ -77,6 +85,23 @@ function pushChangeBudget(
     for (const b of report.breaches) {
       lines.push(`  - ${b.metric}: actual ${b.actual} > limit ${b.limit}`);
     }
+  }
+}
+
+function pushCommandResults(
+  lines: string[],
+  results: readonly CommandReport[] | undefined,
+): void {
+  if (results === undefined || results.length === 0) return;
+  const ok = results.filter((r) => r.exitCode === 0 && !r.timedOut).length;
+  lines.push("");
+  lines.push("## Commands");
+  lines.push(`- Result: ${ok}/${results.length} ok`);
+  for (const r of results) {
+    const status = r.timedOut ? "timeout" : `exit ${r.exitCode}`;
+    lines.push(
+      `- ${redactSecretLines(r.command)}: ${status}, ${Math.round(r.durationMs)}ms`,
+    );
   }
 }
 
@@ -129,6 +154,7 @@ export function buildSummary(i: SummaryInputs): string {
     for (const v of i.violations) lines.push(`- ${v.path} (${v.reason})`);
   }
   pushChangeBudget(lines, i.diffStat, i.changeBudget);
+  pushCommandResults(lines, i.commandResults);
   lines.push("");
   lines.push("## Codex output (stdout tail)");
   lines.push(...fencedRedactedTail(i.codexStdoutTail));

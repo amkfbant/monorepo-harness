@@ -46,6 +46,7 @@
 17. PASS 2 — if diff.ok && safetyStatus=allowed && codex ok && allowedCommands non-empty:
     setStatus('verified'); emit commands_started
     runAllowedCommands(worktree, allowedCommands) → results; emit commands_completed
+    non-zero / timeout results are advisory unless they also affect policy or budget validation
     RE-RUN diffAndValidate against the post-command worktree
     emit diff_collection_failed / policy_validation_completed with stage="post-command" (validation durationMs on success)
     re-run validateDiffBudget against the post-command stat so formatter/build churn is included
@@ -106,7 +107,6 @@ running ──► generated ──► verified ──► needs_review  │
    │            │              │                          │
    │            │              │                          └─► cleaned (harness cleanup)
    │            │              │
-   │            │              ├─► failed-command (allowed command の exit≠0 / timeout)
    │            │              ├─► failed-budget-exceeded (enforced change_budget exceeded)
    │            │              ├─► failed-policy-violation (safetyStatus=denied)
    │            │
@@ -151,8 +151,7 @@ priority は上から下（post-command pass が走った場合は、その後�
 4. `safetyStatus === "denied"` → `failed-policy-violation`
    （codex 直後 / commands 実行後のどちらの validation で denied になっても）
 5. `change_budget` が enforced exceeded → `failed-budget-exceeded`
-6. `allowedCommands` が走り 1 つでも失敗 → `failed-command`
-7. else → `needs_review`
+6. else → `needs_review`
 
 `safetyStatus` は orthogonal: status が `failed-codex-timeout` でも、validation が走った結果として `denied` のことがある。reviewer はこの 2 軸を両方確認する。
 
@@ -1436,10 +1435,8 @@ redaction 処理が子 run の diff に特例なしでそのまま効き、git o
   1. **validated-parent gate**: 親 run の **status / safetyStatus が policy-validated
      （完了＋通過）** な場合のみ継続する。継続可能 status は `needs_review` / `approved` /
      `changes_requested`（いずれも path-policy validation を `allowed` で通過済み ＝ worktree
-     surface が policy-valid）に加え、`failed-command` は **`safetyStatus=allowed` のときだけ**
-     継続可能とする。`failed-command(allowed)` は allowedCommands が失敗しただけで、失敗前後
-     の worktree surface は path-policy validation を通過済みなので、recovery rerun はその
-     validated surface を amend できる。`failed-policy-violation`（scope 外/deny path を抱える）・
+     surface が policy-valid）と、過去 version が作った legacy `failed-command` のうち
+     **`safetyStatus=allowed`** のものだけ。`failed-policy-violation`（scope 外/deny path を抱える）・
      `failed-command` でも `safetyStatus` が `allowed` でない/欠落しているもの・
      `failed-internal-error`（reset 不能の partial-carry worktree かもしれない）・
      `failed-codex` 等は非 validated → 継続せず `parent_not_validated` で skip し、

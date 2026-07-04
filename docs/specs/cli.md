@@ -52,7 +52,7 @@ harness run \
 ### Exit code
 
 - `0`: workflow が正常完了し、final status が `needs_review`
-- `1`: workflow が result として `failed-policy-violation` / `failed-codex` / `failed-codex-timeout` / `failed-diff-collection` / `failed-command` を返した
+- `1`: workflow が result として `failed-policy-violation` / `failed-codex` / `failed-codex-timeout` / `failed-diff-collection` / `failed-budget-exceeded` / legacy `failed-command` を返した
 - `2`: harness 自体の例外。`failed-internal-error` で meta を finalize した後 rethrow されたケース、policy load / lock acquire 等の throw もここに含む
 
 (`generated` / `verified` は workflow 内部の中間 status。external observer から見える最終 status は `needs_review` または `failed-*`。)

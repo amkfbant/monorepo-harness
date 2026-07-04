@@ -292,10 +292,10 @@ for each changed path p:
 
 ## allowedCommands 実行
 
-`domain.commands.allow` に並べた shell コマンドは、path validation が通過した直後（`needs_review` に確定する前）に **worktree 内** で `sh -c "<cmd>"` として順次実行される。実装: `src/core/command-runner.ts`。
+`domain.commands.allow` に並べた shell コマンドは、path validation が通過した直後（`needs_review` に確定する前）に **worktree 内** で `sh -c "<cmd>"` として順次実行される。これは「harness が実行してよい command」の allowlist であり、run の close gate ではない。hitch の deterministic gate にしたい command は、別途 `kind: command` close condition として宣言し、command close-check runner が実行する。実装: `src/core/command-runner.ts`。
 
 - 各コマンドの stdout/stderr は `runs/<runId>/commands/<id>.{out,err}.log` に保存。`id` は policy 指定値 (structured form) または `cmd-<index>` (legacy string form)
-- 1 つでも `exitCode !== 0` or timeout したら status = `failed-command`、`safetyStatus` は据え置き
+- `exitCode !== 0` or timeout は `meta.commandResults` / `summary.md` / `review-request.md` に記録されるが、それだけでは run status を `failed-command` にしない。`commands.allow` は実行許可リストであり、hitch の close gate は `kind: command` close condition で表す
 - **timeout**: per-command `timeout_ms` > domain `commands.defaults.timeout_ms` > **5 分** (`DEFAULT_COMMAND_TIMEOUT_MS`) の順で決まる。tree-kill で子孫プロセスも SIGKILL
 - **環境変数**: `commands.defaults.env_allowlist` でホワイトリスト指定可。未指定は **`PATH / HOME / USER / SHELL / LANG / LC_ALL / TERM / TMPDIR`** （`DEFAULT_COMMAND_ENV_ALLOWLIST`）。空配列 `[]` を明示すれば env なしで起動。`OPENAI_API_KEY` 等は default では **伝播しない**。per-command `env` を指定すると base env の上にマージされる
 - **shell escaping**: legacy string form (`- "npm test"`) は `sh -c <cmd>` で実行。structured form (`{ cmd, args: [...] }`) は `spawn(cmd, args)` で **shell を介さない**（クォート / `$VAR` 展開なし）。誤実行リスクを下げたい場合は structured form 推奨
