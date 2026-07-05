@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.26](https://github.com/amkfbant/monorepo-harness/compare/v0.7.25...v0.7.26) (2026-07-05)
+
+
+### Bug Fixes
+
+* list valid project domains on lookup errors ([#446](https://github.com/amkfbant/monorepo-harness/issues/446)) ([db3254a](https://github.com/amkfbant/monorepo-harness/commit/db3254aef32c46f7185622a7b57510eb31ce716e))
+
 ## [0.7.25](https://github.com/amkfbant/monorepo-harness/compare/v0.7.24...v0.7.25) (2026-07-05)
 
 
