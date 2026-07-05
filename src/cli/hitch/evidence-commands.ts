@@ -91,7 +91,10 @@ export function registerHitchEvidenceCommands(
       "--kind <kind>",
       `evidence kind: ${HITCH_EVIDENCE_KINDS.join(" | ")}`,
     )
-    .option("--condition <id>", "close-condition id this evidence satisfies")
+    .option(
+      "--condition <id>",
+      "close-condition id this evidence attaches to for convergence evaluation",
+    )
     .option("--json", "emit JSON", false)
     .action((hitchId: string, raw: Record<string, unknown>) => {
       withHitchErrorExit(() => {

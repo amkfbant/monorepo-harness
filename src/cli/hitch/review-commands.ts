@@ -100,9 +100,12 @@ export function registerHitchReviewCommands(
     .description("hitch close checks");
   closeCheckCmd
     .command("record")
-    .description("record close-check evidence")
+    .description("record manually recordable close-check evidence")
     .argument("<hitch-id>", "hitch id")
-    .requiredOption("--condition <id>", "close condition id")
+    .requiredOption(
+      "--condition <id>",
+      "close condition id (manual record rejects evaluator-only kinds)",
+    )
     .requiredOption("--status <status>", "pending | passed | failed | skipped | unknown")
     .option("--checked-by <actor>", "actor label", "cli")
     .option("--message <text>", "message")

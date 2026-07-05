@@ -129,9 +129,45 @@ function assertCloseCheckRecordable(
   ) {
     throw new DbError(
       `close condition ${condition.id} kind=${condition.kind} cannot be ` +
-        `recorded manually; use its deterministic evaluator`,
+        `recorded manually; use its deterministic evaluator. ` +
+        manualRecordGuidance(input.hitchId, condition.id, condition.kind),
     );
   }
+}
+
+function manualRecordGuidance(
+  hitchId: string,
+  conditionId: string,
+  kind: HitchCloseConditionKind,
+): string {
+  if (kind === "review_consensus") {
+    return (
+      `Next: run harness hitch orchestrate ${hitchId} --repo <path> to refresh ` +
+      `review consensus, or attach accepted Codex review evidence with ` +
+      `harness hitch evidence add ${hitchId} --condition ${conditionId} ` +
+      `--kind transcript --label "Codex review" --output-file <path>.`
+    );
+  }
+  if (kind === "evidence_attached") {
+    return (
+      `Next: attach condition-scoped evidence with harness hitch evidence add ` +
+      `${hitchId} --condition ${conditionId} --label <text> ` +
+      `(--command <text> | --output-file <path> | --metric k=v).`
+    );
+  }
+  if (kind === "finding_policy") {
+    return (
+      `Next: resolve/classify the relevant findings, then run ` +
+      `harness hitch check-convergence ${hitchId}.`
+    );
+  }
+  if (kind === "facet_red_test") {
+    return (
+      `Next: provide the required RED-test evidence through the normal ` +
+      `hitch flow, then run harness hitch check-convergence ${hitchId}.`
+    );
+  }
+  return `Next: run harness hitch check-convergence ${hitchId}.`;
 }
 
 function rowToCloseCheck(row: HitchCloseCheckRow): HitchCloseCheck {

@@ -128,40 +128,49 @@ export function registerHitchLifecycleCommands(
       });
     });
 
+  const showHitchStatus = (hitchId: string, raw: Record<string, unknown>) => {
+    withHitchErrorExit(() => {
+      const result = withHitchRepo(opts, ({ repo, db }) => {
+        const session = repo.requireSession(hitchId);
+        const findings = repo.listFindings({ hitchId, limit: 10_000 });
+        const decisions = repo.listDecisions(hitchId);
+        const lifecycleEvents = repo.listLifecycleEvents(hitchId);
+        const closeChecks = repo.listCloseChecks(hitchId);
+        const convergence = new ConvergenceService(repo).evaluate(hitchId);
+        const tokenUsage = hitchTokenUsage(db, hitchId);
+        const evidence = repo.listEvidence(hitchId);
+        return {
+          session,
+          findings,
+          decisions,
+          lifecycleEvents,
+          closeChecks,
+          convergence,
+          tokenUsage,
+          evidence,
+        };
+      });
+      if (raw.json === true) {
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      } else {
+        process.stdout.write(`${formatHitchStatusLine(result)}\n`);
+      }
+    });
+  };
+
   hitchCmd
     .command("status")
     .description("show a hitch session with current convergence")
     .argument("<hitch-id>", "hitch id")
     .option("--json", "emit JSON", false)
-    .action((hitchId: string, raw: Record<string, unknown>) => {
-      withHitchErrorExit(() => {
-        const result = withHitchRepo(opts, ({ repo, db }) => {
-          const session = repo.requireSession(hitchId);
-          const findings = repo.listFindings({ hitchId, limit: 10_000 });
-          const decisions = repo.listDecisions(hitchId);
-          const lifecycleEvents = repo.listLifecycleEvents(hitchId);
-          const closeChecks = repo.listCloseChecks(hitchId);
-          const convergence = new ConvergenceService(repo).evaluate(hitchId);
-          const tokenUsage = hitchTokenUsage(db, hitchId);
-          const evidence = repo.listEvidence(hitchId);
-          return {
-            session,
-            findings,
-            decisions,
-            lifecycleEvents,
-            closeChecks,
-            convergence,
-            tokenUsage,
-            evidence,
-          };
-        });
-        if (raw.json === true) {
-          process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-        } else {
-          process.stdout.write(`${formatHitchStatusLine(result)}\n`);
-        }
-      });
-    });
+    .action(showHitchStatus);
+
+  hitchCmd
+    .command("show")
+    .description("alias for hitch status")
+    .argument("<hitch-id>", "hitch id")
+    .option("--json", "emit JSON", false)
+    .action(showHitchStatus);
 
   hitchCmd
     .command("close")

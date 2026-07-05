@@ -361,6 +361,7 @@ describe("CLI help surface golden (#125 behavior-zero gate)", () => {
         start
         list
         status
+        show
         close
         cancel
         reopen

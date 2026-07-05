@@ -382,6 +382,7 @@ harness hitch start --title <text> [--hitch-id <id>] [--project <id>] [--repo-id
   [--max-total-new-findings <n>] [--json]
 harness hitch list [--status <status>] [--project <id>] [--repo-id <id>] [--domain <domain>] [--limit <n>] [--json]
 harness hitch status <hitch-id> [--json]
+harness hitch show <hitch-id> [--json]   # alias for status
 harness hitch close <hitch-id> --summary <text> [--created-by <actor>] [--force] [--json]
 harness hitch cancel <hitch-id> --reason <text> [--created-by <actor>] [--json]
 harness hitch reopen <hitch-id> --reason <text> [--created-by <actor>] [--extend-iterations <n>] [--extend-review-cycles <n>] [--extend-reruns <n>] [--json]
@@ -535,6 +536,33 @@ reason・actor・timestamp・`detail`）と `tokenUsage`（per-hitch の `run_us
 `pr_adopted` があれば adopted PR を `pr=...` として優先表示し、旧 run 由来 PR は
 `supersededPr=...` として併記する（表示のみ）。usage がある hitch では
 `tokens total=… (in=… …) runsWithUsage=… byKind[…]` の 1 行を追加表示する。
+`hitch show <hitch-id>` は `hitch status <hitch-id>` の alias で、JSON/text の出力契約は
+同一。single-hitch detail view は `status` / `show`、evidence の single-record detail view は
+`hitch evidence show <evidence-id>` であり、`hitch show` は evidence id を受け取らない。
+
+`hitch close-check record` は operator が close-check evidence row を手動記録する
+escape hatch だが、手動記録できる close-condition kind は `command` / `manual` /
+`operation_status` / `db_doctor` / `artifact_exists` に限られる。`review_consensus` /
+`finding_policy` / `facet_red_test` / `evidence_attached` は evaluator-only で、
+`close-check record` による `passed` 自己証明は拒否される。次の経路を使う:
+
+- `review_consensus`: `harness hitch orchestrate <hitch-id> --repo <path>` で review runner
+  に fresh な deterministic close-check を記録させるか、
+  `harness hitch evidence add <hitch-id> --condition <condition-id> --kind transcript --label "Codex review" --output-file <path>`
+  で受理可能な Codex no-blocker transcript evidence を添付する。
+- `evidence_attached`: `harness hitch evidence add <hitch-id> --condition <condition-id> ...`
+  で condition-scoped evidence row を添付する。
+- `finding_policy`: finding を resolve/classify/defer してから
+  `harness hitch check-convergence <hitch-id>` を再実行する。
+- `facet_red_test`: 通常の hitch flow で必要な RED-test evidence を作り、
+  `harness hitch check-convergence <hitch-id>` を再実行する。
+
+`hitch evidence add --condition <id>` は evidence row を添付するだけであり、すべての kind で
+即座に close-check row を `passed` として書くわけではない。`evidence_attached` と
+`review_consensus` の accepted no-blocker shapes だけが convergence evaluator によって
+pass/fail/pending に変換される。その他の external-evidence kind は close-check evaluator
+または manual record path が別途必要で、`hitch status` / `hitch check-convergence` の
+current convergence が正本である。
 
 `hitch close` は convergence が `close_ready` でない限り `--force` を要求する。
 `check-convergence` は `diverging` / `budget_exhausted` / `escalate` で exit 2。
