@@ -333,7 +333,13 @@ export async function collectTrackedPatchForPaths(
   if (opts.paths.length === 0) return "";
   const g = withTimeout(opts.repoPath, opts.timeoutMs);
   return await gitCliOrThrow(
-    [...DIFF_BASE_ARGS, opts.baseSha, "--", ...opts.paths],
+    [
+      "--literal-pathspecs",
+      ...DIFF_BASE_ARGS,
+      opts.baseSha,
+      "--",
+      ...opts.paths,
+    ],
     g,
   );
 }
