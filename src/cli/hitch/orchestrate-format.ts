@@ -32,7 +32,11 @@ export function formatHitchOrchestrateProgressLine(
     `hitch ${event.hitchId}: step ${event.step}` +
     ` decision=${event.decision}` +
     ` action=${event.action}`;
-  if (event.kind === "step_started") return `${base} started`;
+  if (event.kind === "step_started") {
+    const detail =
+      event.detail !== undefined ? ` detail=${quoteCliField(event.detail)}` : "";
+    return `${base} started${detail}`;
+  }
   if (event.kind === "step_heartbeat") {
     return `${base} still-running elapsed=${formatElapsed(event.elapsedMs)}`;
   }

@@ -57,6 +57,22 @@ describe("hitch CLI formatting", () => {
     );
   });
 
+  it("prints optional orchestrate start detail for operator advisories", () => {
+    expect(
+      formatHitchOrchestrateProgressLine({
+        kind: "step_started",
+        hitchId: "g-progress",
+        step: 2,
+        decision: "continue",
+        action: "review",
+        detail:
+          "Non-blocking open in-scope P2/P3 findings with suggested fixes remain.",
+      }),
+    ).toBe(
+      'hitch g-progress: step 2 decision=continue action=review started detail="Non-blocking open in-scope P2/P3 findings with suggested fixes remain."',
+    );
+  });
+
   it("labels passed review_consensus checks as static-only approval", () => {
     const line = formatHitchStatusLine({
       session: {

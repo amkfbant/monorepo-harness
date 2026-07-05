@@ -86,6 +86,7 @@ export type OrchestrationProgressEvent =
       step: number;
       decision: string;
       action: OrchestratorAction["kind"];
+      detail?: string;
     }
   | {
       kind: "step_heartbeat";

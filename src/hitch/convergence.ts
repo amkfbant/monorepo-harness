@@ -1,12 +1,15 @@
 import { OPEN_FINDING_LIFECYCLES, UNRESOLVED_OUT_OF_SCOPE_FINDING_LIFECYCLES, type HitchFindingFilter, type HitchRepository, type LinkedPhaseSpecApprovalDrift } from "./repository.js";
 import { evaluateCloseConditions } from "./close-checks.js";
-import type { HitchConvergenceDecision, HitchConvergenceMetrics, HitchConvergenceResult, HitchNextAction, HitchReviewCycle, HitchSession } from "./types.js";
+import type { HitchConvergenceDecision, HitchConvergenceMetrics, HitchConvergenceResult, HitchFindingSeverity, HitchNextAction, HitchReviewCycle, HitchSession } from "./types.js";
 import { ADVISORY_FINDING_ID_LIMIT } from "./convergence-types.js";
 import type { PendingCloseCheckRouting } from "./convergence-types.js";
 import { buildMetrics, externalEvidenceAskHumanMessage, isLatestCodingAttemptFailed, isLatestCodingAttemptSucceeded, isReviewPending, lastCloseCheckInvalidatingMutationAt, maxAttemptIteration, requiredPendingCloseCheckRouting } from "./convergence-metrics.js";
 // lastCloseCheckInvalidatingMutationAt moved to convergence-metrics.ts; re-export
 // so existing importers keep using "./convergence.js".
 export { lastCloseCheckInvalidatingMutationAt };
+
+export const NON_BLOCKING_SUGGESTED_FIX_ADVISORY_PREFIX =
+  "Non-blocking open in-scope P2/P3 findings with suggested fixes remain" as const;
 
 export class ConvergenceService {
   constructor(private readonly repo: HitchRepository) {}
@@ -155,6 +158,9 @@ function decide(
 
   const outOfScopeDeferralsRequired =
     session.policy.deferOutOfScope && metrics.openOutOfScope > 0;
+  const withNonBlockingAdvisory = (action: HitchNextAction): HitchNextAction =>
+    withNonBlockingSuggestedFixAdvisory(repo, session, metrics, action);
+
   if (
     allRequiredCloseConditionsPassed &&
     closeRequirementsSatisfied(session, metrics) &&
@@ -165,10 +171,10 @@ function decide(
       "close_ready",
       "original close conditions satisfied",
       metrics,
-      {
+      withNonBlockingAdvisory({
         kind: "close_hitch",
         message: "Close hitch and defer remaining out-of-scope follow-ups.",
-      },
+      }),
     );
   }
 
@@ -193,11 +199,11 @@ function decide(
       "continue",
       "review the last succeeded coder run before budget_exhausted",
       metrics,
-      {
+      withNonBlockingAdvisory({
         kind: "run_review",
         message:
           "Review the latest succeeded coder run before stopping at budget.",
-      },
+      }),
     );
   }
   if (budgetLimitReason !== null) {
@@ -219,10 +225,10 @@ function decide(
       "continue",
       "review the latest coder run before another fix pass",
       metrics,
-      {
+      withNonBlockingAdvisory({
         kind: "run_review",
         message: "Review the latest coder run before another fix pass.",
-      },
+      }),
     );
   }
 
@@ -319,11 +325,11 @@ function decide(
       "continue",
       "out-of-scope findings require deferral",
       metrics,
-      {
+      withNonBlockingAdvisory({
         kind: "defer_followups",
         findingIds: unresolvedOutOfScopeFindingIds(repo, session.hitchId),
         message: "Defer out-of-scope findings before closing the hitch.",
-      },
+      }),
     );
   }
 
@@ -373,10 +379,10 @@ function decide(
       "continue",
       "refresh stale review consensus before close",
       metrics,
-      {
+      withNonBlockingAdvisory({
         kind: "run_review",
         message: "Refresh the review consensus close-check for this run.",
-      },
+      }),
     );
   }
 
@@ -386,10 +392,10 @@ function decide(
       "continue",
       "more validation required",
       metrics,
-      {
+      withNonBlockingAdvisory({
         kind: "run_close_check",
         message: "Record command close-check evidence.",
-      },
+      }),
     );
   }
 
@@ -422,20 +428,26 @@ function decide(
       "continue",
       "external close-check evidence required",
       metrics,
-      {
+      withNonBlockingAdvisory({
         kind: "ask_human",
         message: externalEvidenceAskHumanMessage(
           pendingCloseCheckRouting.externalEvidenceConditions,
           linkedPhaseSpecDrifts,
         ),
-      },
+      }),
     );
   }
 
-  return result(session.hitchId, "continue", "more validation required", metrics, {
-    kind: "run_close_check",
-    message: "Record command close-check evidence.",
-  });
+  return result(
+    session.hitchId,
+    "continue",
+    "more validation required",
+    metrics,
+    withNonBlockingAdvisory({
+      kind: "run_close_check",
+      message: "Record command close-check evidence.",
+    }),
+  );
 }
 
 function hitchBudgetExceededReason(
@@ -613,6 +625,84 @@ function unresolvedOutOfScopeFindingIds(
       limit: ADVISORY_FINDING_ID_LIMIT,
     })
     .map((f) => f.findingId);
+}
+
+function withNonBlockingSuggestedFixAdvisory(
+  repo: HitchRepository,
+  session: HitchSession,
+  metrics: HitchConvergenceMetrics,
+  action: HitchNextAction,
+): HitchNextAction {
+  const advisory = nonBlockingSuggestedFixAdvisory(repo, session, metrics);
+  if (advisory === null) return action;
+  return {
+    ...action,
+    message: `${action.message} ${advisory}`,
+  };
+}
+
+function nonBlockingSuggestedFixAdvisory(
+  repo: HitchRepository,
+  session: HitchSession,
+  metrics: HitchConvergenceMetrics,
+): string | null {
+  const severities = nonBlockingSuggestedFixSeverities(session, metrics);
+  if (severities.length === 0) return null;
+  const findings = repo
+    .listFindings({
+      hitchId: session.hitchId,
+      scopeStatus: "in_scope",
+      severityIn: severities,
+      lifecycleStatusIn: OPEN_FINDING_LIFECYCLES,
+      limit: 200,
+    })
+    .filter(
+      (finding) =>
+        typeof finding.suggestedFix === "string" &&
+        finding.suggestedFix.trim() !== "",
+    );
+  if (findings.length === 0) return null;
+  const displayed = findings
+    .slice(0, ADVISORY_FINDING_ID_LIMIT)
+    .map((finding) => `${finding.findingId}(${finding.severity})`);
+  const more =
+    findings.length > displayed.length
+      ? `, +${findings.length - displayed.length} more`
+      : "";
+  return (
+    `${NON_BLOCKING_SUGGESTED_FIX_ADVISORY_PREFIX} and will not trigger ` +
+    `a coder rerun automatically: ${displayed.join(", ")}${more}. ` +
+    "Fix or defer them before close/PR if they should be included."
+  );
+}
+
+function nonBlockingSuggestedFixSeverities(
+  session: HitchSession,
+  metrics: HitchConvergenceMetrics,
+): HitchFindingSeverity[] {
+  const severities: HitchFindingSeverity[] = ["P3"];
+  const maxOpenInScopeP2 = effectiveMaxOpenInScopeP2(session);
+  if (
+    maxOpenInScopeP2 === undefined ||
+    metrics.openInScopeP2 <= maxOpenInScopeP2
+  ) {
+    severities.unshift("P2");
+  }
+  return severities;
+}
+
+function effectiveMaxOpenInScopeP2(session: HitchSession): number | undefined {
+  let maxOpenInScopeP2 = session.policy.closeRequires.maxOpenInScopeP2;
+  for (const condition of session.closeConditions) {
+    if (!condition.required || condition.kind !== "finding_policy") continue;
+    const ruleMax = condition.rule?.maxOpenInScopeP2;
+    if (typeof ruleMax !== "number" || !Number.isFinite(ruleMax)) continue;
+    maxOpenInScopeP2 =
+      maxOpenInScopeP2 === undefined
+        ? ruleMax
+        : Math.min(maxOpenInScopeP2, ruleMax);
+  }
+  return maxOpenInScopeP2;
 }
 
 function result(

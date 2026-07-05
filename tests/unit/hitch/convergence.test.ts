@@ -6,6 +6,7 @@ import { openDb } from "../../../src/db/connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import {
   ConvergenceService,
+  NON_BLOCKING_SUGGESTED_FIX_ADVISORY_PREFIX,
   RECOVERABLE_DIVERGENCE_REASON,
   divergenceReasonForBudget,
 } from "../../../src/hitch/convergence.js";
@@ -166,6 +167,83 @@ describe("ConvergenceService", () => {
       createGoal(repo);
       passClose(repo);
       expect(service.evaluate("goal-test").decision).toBe("close_ready");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("adds an advisory when non-blocking suggested fixes remain at close_ready", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo);
+      const p2 = addFinding(repo, {
+        scopeStatus: "in_scope",
+        severity: "P2",
+        suggestedFix: "Add regression coverage.",
+      });
+      const p3 = addFinding(repo, {
+        scopeStatus: "in_scope",
+        severity: "P3",
+        suggestedFix: "Tighten wording.",
+      });
+      passClose(repo);
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("close_ready");
+      expect(result.recommendedNextAction.kind).toBe("close_hitch");
+      expect(result.recommendedNextAction.message).toContain(
+        NON_BLOCKING_SUGGESTED_FIX_ADVISORY_PREFIX,
+      );
+      expect(result.recommendedNextAction.message).toContain(
+        `${p2.findingId}(P2)`,
+      );
+      expect(result.recommendedNextAction.message).toContain(
+        `${p3.findingId}(P3)`,
+      );
+      expect(result.recommendedNextAction.message).toContain(
+        "will not trigger a coder rerun automatically",
+      );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("does not advise that finding_policy-blocked P2 suggested fixes are non-blocking", () => {
+    const { db, repo, service } = fresh();
+    try {
+      createGoal(repo, {
+        closeConditions: [
+          {
+            id: "finding-policy",
+            kind: "finding_policy",
+            required: true,
+            rule: { maxOpenInScopeP2: 0 },
+          },
+        ],
+      });
+      addFinding(repo, {
+        scopeStatus: "in_scope",
+        severity: "P2",
+        suggestedFix: "Fix the policy blocker.",
+      });
+      const attempt = repo.createAttempt({
+        hitchId: "goal-test",
+        attemptType: "implement",
+        createdAt: "2026-05-25T00:00:00.000Z",
+        startedAt: "2026-05-25T00:00:00.000Z",
+      });
+      repo.completeAttempt({
+        attemptId: attempt.attemptId,
+        status: "succeeded",
+        completedAt: "2026-05-25T00:00:10.000Z",
+      });
+
+      const result = service.evaluate("goal-test");
+      expect(result.decision).toBe("continue");
+      expect(result.reason).toMatch(/review the latest coder run/);
+      expect(result.recommendedNextAction.message).not.toContain(
+        NON_BLOCKING_SUGGESTED_FIX_ADVISORY_PREFIX,
+      );
     } finally {
       db.close();
     }
@@ -1820,10 +1898,17 @@ describe("ConvergenceService", () => {
         },
       });
       passClose(repo);
-      addFinding(repo, { scopeStatus: "in_scope", severity: "P2" });
+      addFinding(repo, {
+        scopeStatus: "in_scope",
+        severity: "P2",
+        suggestedFix: "Fix the close blocker.",
+      });
       const result = service.evaluate("goal-test");
       expect(result.decision).toBe("needs_fix");
       expect(result.recommendedNextAction.kind).toBe("fix_findings");
+      expect(result.recommendedNextAction.message).not.toContain(
+        NON_BLOCKING_SUGGESTED_FIX_ADVISORY_PREFIX,
+      );
     } finally {
       db.close();
     }

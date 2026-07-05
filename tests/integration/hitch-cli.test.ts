@@ -1236,6 +1236,78 @@ describe("hitch CLI", () => {
     expect(r.out).toMatch(/next-action=/);
   });
 
+  it("orchestrate --dry-run advises when non-blocking suggested fixes will not rerun coder", () => {
+    const { root } = setup();
+    expect(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Dry advisory",
+        "--hitch-id",
+        "g-dry-advisory",
+        "--domain",
+        "src",
+        "--created-by",
+        "cli",
+      ]).code,
+    ).toBe(0);
+    const attempt = json<{ attemptId: string }>(
+      runCli(root, [
+        "hitch",
+        "attempt",
+        "start",
+        "g-dry-advisory",
+        "--type",
+        "implement",
+        "--json",
+      ]),
+    );
+    expect(
+      runCli(root, [
+        "hitch",
+        "attempt",
+        "complete",
+        attempt.attemptId,
+        "--status",
+        "succeeded",
+        "--run-id",
+        "run-dry-advisory",
+      ]).code,
+    ).toBe(0);
+    expect(
+      runCli(root, [
+        "hitch",
+        "finding",
+        "add",
+        "g-dry-advisory",
+        "--severity",
+        "P2",
+        "--category",
+        "correctness",
+        "--summary",
+        "Add coverage for non-blocking advice",
+        "--scope",
+        "in-scope",
+        "--suggested-fix",
+        "Add a regression test.",
+      ]).code,
+    ).toBe(0);
+
+    const r = runCli(root, [
+      "hitch",
+      "orchestrate",
+      "g-dry-advisory",
+      "--dry-run",
+    ]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("next-action=review");
+    expect(r.out).toContain(
+      "Non-blocking open in-scope P2/P3 findings with suggested fixes remain",
+    );
+    expect(r.out).toContain("will not trigger a coder rerun automatically");
+  });
+
   it("hitch orchestrate fails early with friendly guidance when the DB is newer than the harness (#271)", () => {
     const { root, repoPath, scopePath } = setupProjectFixture();
     const hitch = json<{ hitchId: string }>(

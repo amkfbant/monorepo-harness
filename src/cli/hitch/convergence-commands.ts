@@ -115,7 +115,9 @@ export function registerHitchConvergenceCommands(
             return { convergence: result, action: decideOrchestratorAction(result) };
           });
           process.stdout.write(
-            `hitch=${hitchId} decision=${convergence.decision} next-action=${action.kind}\n`,
+            `hitch=${hitchId} decision=${convergence.decision}` +
+              ` next-action=${action.kind}` +
+              ` message=${JSON.stringify(convergence.recommendedNextAction.message)}\n`,
           );
           return;
         }
