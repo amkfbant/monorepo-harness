@@ -1416,6 +1416,7 @@ The CLI exposes `harness hitch`:
 ```bash
 harness hitch start --title "..." --scope-file scope.yaml --close-file close.yaml
 harness hitch status <hitch-id>   # also reports per-hitch token usage (run_usage SUM over attempt runs, retry-inclusive, by kind)
+harness hitch show <hitch-id>     # alias for status; same JSON/text contract
 harness hitch reopen <hitch-id> --reason "..." [--created-by actor] [--extend-iterations N] [--extend-review-cycles N] [--extend-reruns N]
 harness hitch adopt-pr <hitch-id> <pr-url-or-number> --reason "..." [--created-by actor]
 harness hitch update <hitch-id> [--close-file close.yaml] [--scope-file scope.yaml] [--policy-file policy.yaml] --reason "..." [--allow-scope-widen] [--allow-gate-loosen] [--created-by actor]
@@ -1433,6 +1434,20 @@ CLI/MCP close-check record tools may still record externally supplied command
 evidence. Autonomous orchestrate only runs commands that resolve to the domain
 policy allowlist; non-allowlisted command conditions fail fast and require
 external evidence.
+
+Manual `hitch close-check record` is limited to close-condition kinds whose
+state is legitimately operator-supplied or command-result supplied: `command`,
+`manual`, `operation_status`, `db_doctor`, and `artifact_exists`.
+Evaluator-only conditions (`review_consensus`, `finding_policy`,
+`facet_red_test`, `evidence_attached`) reject manual close-check records and
+print the next operator command. In particular, `review_consensus` is refreshed
+by the review runner (`harness hitch orchestrate <hitch-id> --repo <path>`) or
+by accepted condition-scoped Codex review evidence
+(`harness hitch evidence add <hitch-id> --condition <condition-id> --kind transcript --label "Codex review" --output-file <path>`),
+not by `hitch close-check record --status passed`. Evidence rows are inputs to
+the convergence evaluator; `hitch status` / `hitch check-convergence` remain
+the source of truth for whether a condition is currently passed, failed, or
+pending.
 
 `hitch adopt-pr` is audit/status-only for operator takeover. It records the
 adopted PR and the latest run PR it supersedes, but it does not rewrite

@@ -161,6 +161,35 @@ function releaseHeldLock(held: { db: ReturnType<typeof openDb>; lock: DomainLock
 }
 
 describe("hitch CLI", () => {
+  it("supports hitch show as an alias for hitch status", () => {
+    const { root, scopePath, closePath } = setup();
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Hitch status alias",
+        "--domain",
+        "hitch",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--json",
+      ]),
+    );
+
+    const status = json<{ session: { hitchId: string }; convergence: { decision: string } }>(
+      runCli(root, ["hitch", "status", hitch.hitchId, "--json"]),
+    );
+    const show = json<{ session: { hitchId: string }; convergence: { decision: string } }>(
+      runCli(root, ["hitch", "show", hitch.hitchId, "--json"]),
+    );
+
+    expect(show.session.hitchId).toBe(status.session.hitchId);
+    expect(show.convergence.decision).toBe(status.convergence.decision);
+  });
+
   it("creates a hitch, tracks attempts/findings/checks, and closes on convergence", () => {
     const { root, scopePath, closePath } = setup();
     const hitch = json<{ hitchId: string }>(
@@ -966,6 +995,10 @@ describe("hitch CLI", () => {
     expect(deterministic.code).not.toBe(0);
     expect(deterministic.out).toMatch(/kind=review_consensus/);
     expect(deterministic.out).toMatch(/deterministic evaluator/);
+    expect(deterministic.out).toContain(
+      `harness hitch evidence add ${hitch.hitchId} --condition review-consensus`,
+    );
+    expect(deterministic.out).toContain("harness hitch orchestrate");
 
     const undeclared = runCli(root, [
       "hitch",
