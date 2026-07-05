@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.25](https://github.com/amkfbant/monorepo-harness/compare/v0.7.24...v0.7.25) (2026-07-05)
+
+
+### Bug Fixes
+
+* **cli:** clarify hitch status and close-check evidence ([#444](https://github.com/amkfbant/monorepo-harness/issues/444)) ([2481b18](https://github.com/amkfbant/monorepo-harness/commit/2481b1836b1d4bde690f86ede0668d763d042afd))
+
 ## [0.7.24](https://github.com/amkfbant/monorepo-harness/compare/v0.7.23...v0.7.24) (2026-07-05)
 
 
