@@ -981,6 +981,65 @@ describe("hitch CLI", () => {
     expect(undeclared.out).toMatch(/close condition not declared/);
   });
 
+  it("allows attached Codex no-finding evidence to satisfy review_consensus without force-close", () => {
+    const { root, scopePath } = setup();
+    const closePath = join(root, "close-review-consensus-evidence.yaml");
+    writeFileSync(
+      closePath,
+      [
+        "- id: review-consensus",
+        "  kind: review_consensus",
+        "  required: true",
+        "",
+      ].join("\n"),
+    );
+    const hitch = json<{ hitchId: string }>(
+      runCli(root, [
+        "hitch",
+        "start",
+        "--title",
+        "Review consensus evidence",
+        "--domain",
+        "hitch",
+        "--scope-file",
+        scopePath,
+        "--close-file",
+        closePath,
+        "--json",
+      ]),
+    );
+
+    const pending = json<{ decision: string; metrics: { closeConditionsPending: number } }>(
+      runCli(root, ["hitch", "check-convergence", hitch.hitchId, "--json"]),
+    );
+    expect(pending.decision).toBe("needs_fix");
+    expect(pending.metrics.closeConditionsPending).toBe(1);
+
+    const added = runCli(root, [
+      "hitch",
+      "evidence",
+      "add",
+      hitch.hitchId,
+      "--condition",
+      "review-consensus",
+      "--kind",
+      "transcript",
+      "--label",
+      "github codex review",
+      "--output",
+      "Codex Review: Didn't find any major issues. Hooray!",
+    ]);
+    expect(added.code).toBe(0);
+
+    const convergence = json<{
+      decision: string;
+      metrics: { closeConditionsPending: number; closeConditionsPassed: number };
+    }>(runCli(root, ["hitch", "check-convergence", hitch.hitchId, "--json"]));
+    expect(convergence.decision).toBe("close_ready");
+    expect(convergence.metrics.closeConditionsPending).toBe(0);
+    expect(convergence.metrics.closeConditionsPassed).toBe(1);
+  });
+
   it("defers an out-of-scope finding to a backlog follow-up", () => {
     const { root, scopePath, closePath } = setup();
     const hitch = json<{ hitchId: string }>(

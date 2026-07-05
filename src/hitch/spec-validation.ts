@@ -80,8 +80,8 @@ const KIND_TABLE: Record<
   review_consensus: {
     kind: "review_consensus",
     category: "auto-verify",
-    evaluator: "review runner",
-    guard: "description recommended",
+    evaluator: "review runner or attached Codex evidence fallback",
+    guard: "description recommended; attached evidence is accepted only in kind-bound explicit no-blocker shapes",
   },
   artifact_exists: {
     kind: "artifact_exists",

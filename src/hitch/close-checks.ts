@@ -11,6 +11,7 @@ import {
   parseFacetRule,
   type FacetRedEvidence,
 } from "./facet-coverage.js";
+import { evaluateReviewConsensusEvidenceRows } from "./review-consensus-evidence.js";
 
 const HITCH_EVIDENCE_KIND_SET: ReadonlySet<string> = new Set(
   HITCH_EVIDENCE_KINDS,
@@ -126,6 +127,14 @@ export function evaluateCloseConditions(input: {
         input.freshAfter ?? null,
       );
     }
+    if (condition.kind === "review_consensus") {
+      return evaluateReviewConsensus(
+        condition,
+        latest.get(condition.id) ?? null,
+        input.freshAfter ?? null,
+        input.evidenceRows ?? [],
+      );
+    }
     return evaluateRecordedCheck(
       condition,
       latest.get(condition.id) ?? null,
@@ -177,6 +186,55 @@ function evaluateRecordedCheck(
     status: check.status,
     check,
     message: check.message ?? check.status,
+  };
+}
+
+function evaluateReviewConsensus(
+  condition: HitchCloseCondition,
+  check: HitchCloseCheck | null,
+  freshAfter: string | null,
+  evidenceRows: readonly HitchEvidence[],
+): EvaluatedCloseCondition {
+  const checkIsFresh =
+    check !== null && (freshAfter === null || check.checkedAt >= freshAfter);
+  if (checkIsFresh) return evaluateRecordedCheck(condition, check, freshAfter);
+
+  const evidence = evaluateReviewConsensusEvidenceRows(
+    condition.id,
+    freshAfter,
+    evidenceRows,
+  );
+  if (evidence.status === "passed") {
+    return {
+      condition,
+      status: "passed",
+      check: null,
+      message: `attached Codex review evidence accepted (${evidence.evidenceId})`,
+    };
+  }
+  if (evidence.status === "blocked") {
+    return {
+      condition,
+      status: "pending",
+      check: null,
+      message: `attached Codex review evidence rejected (${evidence.evidenceId}): ${evidence.reason}`,
+    };
+  }
+  if (check !== null && !checkIsFresh) {
+    return {
+      condition,
+      status: "pending",
+      check,
+      message:
+        "review consensus close-check is stale; attach fresh Codex no-finding evidence or rerun review",
+    };
+  }
+  return {
+    condition,
+    status: "pending",
+    check: null,
+    message:
+      "no review consensus evidence recorded; attach Codex no-finding evidence or run review",
   };
 }
 
