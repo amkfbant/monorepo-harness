@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.27](https://github.com/amkfbant/monorepo-harness/compare/v0.7.26...v0.7.27) (2026-07-05)
+
+
+### Bug Fixes
+
+* **hitch:** advise on nonblocking suggested fixes ([#448](https://github.com/amkfbant/monorepo-harness/issues/448)) ([cf71ea1](https://github.com/amkfbant/monorepo-harness/commit/cf71ea1e86be0b33cf87e3064279fff9b8a342a8))
+
 ## [0.7.26](https://github.com/amkfbant/monorepo-harness/compare/v0.7.25...v0.7.26) (2026-07-05)
 
 
