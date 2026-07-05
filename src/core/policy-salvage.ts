@@ -152,19 +152,28 @@ export async function buildPolicySalvage(input: {
   ]);
   let patchArtifact: string | undefined;
   if (allowedPaths.length > 0) {
-    const trackedAllowedPatch = await collectTrackedPatchForPaths({
-      repoPath: input.worktreePath,
-      baseSha: input.baseSha,
-      timeoutMs: input.gitTimeoutMs,
-      paths: trackedAllowed,
-    });
-    const patch = [trackedAllowedPatch, input.untrackedAllowedPatch]
-      .map((p) => p.trimEnd())
-      .filter((p) => p.length > 0)
-      .join("\n\n");
-    if (patch.length > 0) {
-      patchArtifact = "policy-allowed.patch";
-      await writeArtifact(join(input.runDir, patchArtifact), `${patch}\n`);
+    try {
+      const trackedAllowedPatch = await collectTrackedPatchForPaths({
+        repoPath: input.worktreePath,
+        baseSha: input.baseSha,
+        timeoutMs: input.gitTimeoutMs,
+        paths: trackedAllowed,
+      });
+      const patch = [trackedAllowedPatch, input.untrackedAllowedPatch]
+        .map((p) => p.trimEnd())
+        .filter((p) => p.length > 0)
+        .join("\n\n");
+      if (patch.length > 0) {
+        patchArtifact = "policy-allowed.patch";
+        await writeArtifact(join(input.runDir, patchArtifact), `${patch}\n`);
+      }
+    } catch {
+      return {
+        available: false,
+        allowedPaths,
+        deniedPaths,
+        recommendedNextAction: "rerun from base or discard this failed run",
+      };
     }
   }
   return {
