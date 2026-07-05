@@ -34,6 +34,12 @@ original close conditions pass and only out-of-scope, accepted-risk, or deferred
 follow-up findings remain (including out-of-scope findings that were escalated),
 the hitch may close. Open, reopened, or escalated in-scope/unknown P0/P1 findings
 are active blockers and cannot be treated as ordinary deferred work.
+Open in-scope P2/P3 findings remain non-blocking unless a close policy explicitly
+promotes them to blockers. If those non-blocking findings carry `suggestedFix`
+text, convergence still does not trigger a coder rerun automatically; `hitch
+orchestrate --dry-run` and orchestrate progress output surface an advisory so
+operators can fix or defer them before close/PR when they want those suggestions
+included.
 
 Hitch scope is frozen at session start:
 

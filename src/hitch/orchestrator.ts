@@ -4,8 +4,12 @@ import {
   evaluateConvergenceAndRecordStatus,
   recordConvergenceDecisionWithStatus,
 } from "./convergence-status.js";
+import {
+  NON_BLOCKING_SUGGESTED_FIX_ADVISORY_PREFIX,
+} from "./convergence.js";
 import { decideOrchestratorAction } from "./orchestrator-dispatch.js";
 import { findTransientLeaseCause } from "../workspace/db-domain-lock.js";
+import type { HitchConvergenceResult } from "./types.js";
 import type {
   OrchestrationOutcome,
   HitchOrchestrationResult,
@@ -96,6 +100,7 @@ async function withStepProgress<T>(
   action: OrchestratorAction["kind"],
   run: () => Promise<T>,
   detail: (result: T) => string,
+  startDetail?: string,
 ): Promise<T> {
   const startedAt = Date.now();
   emitProgress(input, {
@@ -104,6 +109,7 @@ async function withStepProgress<T>(
     step,
     decision,
     action,
+    ...(startDetail !== undefined ? { detail: startDetail } : {}),
   });
   const heartbeatMs = Math.max(
     1,
@@ -176,6 +182,7 @@ export class HitchOrchestrator {
       );
       finalDecision = convergence.decision;
       const action = decideOrchestratorAction(convergence);
+      const startDetail = progressStartDetail(convergence);
 
       if (action.kind === "stop") {
         steps.push({ step: i, decision: finalDecision, action: "stop", detail: action.outcome });
@@ -198,6 +205,7 @@ export class HitchOrchestrator {
             action.kind,
             () => input.runners.coder(input.hitchId),
             (result) => `${result.runStatus} run=${result.runId}`,
+            startDetail,
           );
           steps.push({ step: i, decision: finalDecision, action: "coder", detail: r.runStatus });
           continue;
@@ -210,6 +218,7 @@ export class HitchOrchestrator {
             action.kind,
             () => input.runners.review(input.hitchId),
             (result) => `${result.decision} run=${result.runId}`,
+            startDetail,
           );
           steps.push({ step: i, decision: finalDecision, action: "review", detail: r.decision });
           continue;
@@ -222,6 +231,7 @@ export class HitchOrchestrator {
             action.kind,
             () => input.runners.closeCheck(input.hitchId),
             (result) => `${result.passed}/${result.checked} passed run=${result.runId}`,
+            startDetail,
           );
           steps.push({
             step: i,
@@ -239,6 +249,7 @@ export class HitchOrchestrator {
             action.kind,
             () => input.runners.classify(input.hitchId),
             (result) => `resolved=${result.resolved}`,
+            startDetail,
           );
           steps.push({ step: i, decision: finalDecision, action: "classify", detail: String(r.resolved) });
           if (!r.resolved) {
@@ -341,6 +352,7 @@ export class HitchOrchestrator {
             action.kind,
             () => input.runners.defer(input.hitchId),
             (result) => `deferred=${result.deferred}`,
+            startDetail,
           );
           steps.push({ step: i, decision: finalDecision, action: "defer", detail: String(r.deferred) });
           continue;
@@ -378,6 +390,7 @@ export class HitchOrchestrator {
               : result.pushRetryPending === true
                 ? `push_retry_pending pr=${result.prUrl}`
                 : `pr=${result.prUrl}`,
+          startDetail,
         );
         // Phase 3: a hard-blocked auto-merge gate escalates rather than closing.
         if (pr.escalateReason !== undefined) {
@@ -465,4 +478,14 @@ export class HitchOrchestrator {
     if (driveAborted(input.signal)) throw abortCause(input.signal);
     return { hitchId: input.hitchId, outcome: "max_steps_exhausted", steps, finalDecision };
   }
+}
+
+function progressStartDetail(
+  convergence: HitchConvergenceResult,
+): string | undefined {
+  return convergence.recommendedNextAction.message.includes(
+    NON_BLOCKING_SUGGESTED_FIX_ADVISORY_PREFIX,
+  )
+    ? convergence.recommendedNextAction.message
+    : undefined;
 }
