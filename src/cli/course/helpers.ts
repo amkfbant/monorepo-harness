@@ -63,6 +63,16 @@ export function withCourseErrorExit(fn: () => void): void {
   }
 }
 
+export async function withCourseErrorExitAsync(
+  fn: () => Promise<void>,
+): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    courseError(e);
+  }
+}
+
 export async function withCourseOrchestrateErrorExit(fn: () => Promise<void>): Promise<void> {
   try {
     await fn();
@@ -294,4 +304,3 @@ export function formatPhaseOutcome(outcome: PhaseOutcome): string {
   const note = outcome.note !== undefined ? ` note=${outcome.note}` : "";
   return `phase=${outcome.phaseId} action=${outcome.action}${driven}${blocked}${ready}${note}`;
 }
-

@@ -3,9 +3,10 @@ import type { Command } from "commander";
 import { CourseRepository } from "../../roadmap/course-repository.js";
 import { HitchRepository } from "../../hitch/repository.js";
 import { parseHitchCloseConditions, parseHitchPolicy, parseHitchScope } from "../../hitch/schemas.js";
+import { assertProjectDomainDefined } from "../../project/domain-validation.js";
 import { PhaseRepository, phaseSpecApprovalStatus } from "../../roadmap/phase-repository.js";
 import { PHASE_STATUSES, type PhaseStatus } from "../../roadmap/types.js";
-import { withCourseErrorExit, withCourseDb, withCourseRepo, writeOutput, readStructuredFile, parseChoice, parseNonNegativeInt, parsePositiveInt, type RegisterCourseCommandsOptions } from "./helpers.js";
+import { withCourseErrorExit, withCourseErrorExitAsync, withCourseDb, withCourseRepo, writeOutput, readStructuredFile, parseChoice, parseNonNegativeInt, parsePositiveInt, type RegisterCourseCommandsOptions } from "./helpers.js";
 
 /**
  * `harness phase` サブコマンド（#125 A15: cli/course.ts から behaviour-zero 分割）。
@@ -207,8 +208,22 @@ export function registerPhaseSubcommands(
     .option("--allow-gate-loosen", "allow a ratified phase close-gate loosening start")
     .option("--created-by <actor>", "actor label", "cli")
     .option("--json", "emit JSON", false)
-    .action((phaseId: string, raw: Record<string, unknown>) => {
-      withCourseErrorExit(() => {
+    .action(async (phaseId: string, raw: Record<string, unknown>) => {
+      await withCourseErrorExitAsync(async () => {
+        if (raw.domain !== undefined) {
+          const courseProjectId = withCourseRepo(opts, ({ courses, phases }) => {
+            const phase = phases.require(phaseId);
+            const course = courses.require(phase.courseId);
+            return course.projectId;
+          });
+          if (courseProjectId !== null) {
+            await assertProjectDomainDefined(
+              opts.getHarnessRoot(),
+              courseProjectId,
+              String(raw.domain),
+            );
+          }
+        }
         const result = withCourseDb(opts, (db) => {
           const courses = new CourseRepository(db);
           const phases = new PhaseRepository(db);

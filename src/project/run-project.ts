@@ -9,6 +9,7 @@ import type {
 import type { RunMeta } from "../logging/run-log.js";
 import { loadProjectById } from "./profile-resolver.js";
 import { ProjectError } from "./errors.js";
+import { requireProjectDomain } from "./domain-validation.js";
 import { scanRepoSignals } from "./repo-signals.js";
 import { loadCompileInputs, compileProjectPolicy } from "./policy-compiler.js";
 import type { ReviewRuleResolution } from "../core/review-rule.js";
@@ -68,12 +69,7 @@ export async function prepareProjectRun(opts: {
       `project "${opts.projectId}" repo path is not a directory: ${repoPath}`,
     );
   }
-  const domainSpec = profile.domains.find((d) => d.id === opts.domain);
-  if (domainSpec === undefined) {
-    throw new ProjectError(
-      `domain "${opts.domain}" is not defined in project "${opts.projectId}"`,
-    );
-  }
+  const domainSpec = requireProjectDomain(profile, opts.projectId, opts.domain);
 
   const repoSignals = await scanRepoSignals(repoPath);
   const inputs = await loadCompileInputs(profile, profilePath, {
