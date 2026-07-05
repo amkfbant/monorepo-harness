@@ -30,6 +30,10 @@ export interface DiffOpts {
   timeoutMs?: number;
 }
 
+export interface PathPatchOpts extends DiffOpts {
+  paths: readonly string[];
+}
+
 interface NumStatRow {
   path: string;
   insertions: number;
@@ -321,4 +325,21 @@ export async function collectDiff(opts: DiffOpts): Promise<DiffResult> {
     ),
     patch,
   };
+}
+
+export async function collectTrackedPatchForPaths(
+  opts: PathPatchOpts,
+): Promise<string> {
+  if (opts.paths.length === 0) return "";
+  const g = withTimeout(opts.repoPath, opts.timeoutMs);
+  return await gitCliOrThrow(
+    [
+      "--literal-pathspecs",
+      ...DIFF_BASE_ARGS,
+      opts.baseSha,
+      "--",
+      ...opts.paths,
+    ],
+    g,
+  );
 }

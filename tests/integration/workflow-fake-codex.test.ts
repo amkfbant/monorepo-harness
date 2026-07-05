@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runDomainCoding } from "../../src/core/workflow-runner.js";
 import { runReviewedRunWorkflow } from "../../src/core/reviewed-run-workflow.js";
+import { renderRunShow } from "../../src/core/run-viewer.js";
 import { createWorktree } from "../../src/workspace/git-worktree.js";
 import { createFakeCodexRunner } from "../../src/codex/fake-codex-runner.js";
 import type { CodexExecRunner } from "../../src/codex/codex-exec-runner.js";
@@ -1613,6 +1614,66 @@ describe("runDomainCoding (fake codex)", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("surfaces an allowed-only salvage patch for mixed policy violations", async () => {
+    const runner = createFakeCodexRunner({
+      edit: async (cwd) => {
+        writeFileSync(
+          join(cwd, "apps/user/src/profile.ts"),
+          "export const x = 42;\n",
+        );
+        writeFileSync(join(cwd, "README.md"), "# leaked root edit\n");
+      },
+    });
+    const r = await runDomainCoding({
+      harnessRoot: harness,
+      repoPath,
+      repoId: "t",
+      domain: "apps/user",
+      goal: "x",
+      baseBranch: "main",
+      codexRunner: runner,
+      now: new Date("2026-05-20T00:00:00Z"),
+    });
+
+    expect(r.status).toBe("failed-policy-violation");
+    expect(r.safetyStatus).toBe("denied");
+    const runDir = join(harness, "runs", r.runId);
+    const allowedPatch = readFileSync(
+      join(runDir, "policy-allowed.patch"),
+      "utf8",
+    );
+    expect(allowedPatch).toMatch(/apps\/user\/src\/profile\.ts/);
+    expect(allowedPatch).toMatch(/export const x = 42/);
+    expect(allowedPatch).not.toMatch(/README\.md/);
+    expect(allowedPatch).not.toMatch(/leaked root edit/);
+
+    const meta = JSON.parse(readFileSync(join(runDir, "meta.json"), "utf8"));
+    expect(meta.policySalvage).toMatchObject({
+      available: true,
+      allowedPaths: ["apps/user/src/profile.ts"],
+      patchArtifact: "policy-allowed.patch",
+    });
+    expect(meta.policySalvage.deniedPaths).toContain("README.md");
+    expect(meta.policySalvage.recommendedNextAction).toMatch(
+      /fresh scoped run/,
+    );
+
+    const summary = readFileSync(join(runDir, "summary.md"), "utf8");
+    expect(summary).toMatch(/## Policy salvage/);
+    expect(summary).toMatch(/Allowed-only patch: policy-allowed\.patch/);
+    const reviewRequest = readFileSync(join(runDir, "review-request.md"), "utf8");
+    expect(reviewRequest).toMatch(/## Policy salvage/);
+    expect(reviewRequest).toMatch(/README\.md/);
+    const show = await renderRunShow(
+      join(harness, "runs"),
+      r.runId,
+      undefined,
+      join(harness, ".harness", "harness.sqlite"),
+    );
+    expect(show).toMatch(/Policy salvage:/);
+    expect(show).toMatch(/allowed-only patch: policy-allowed\.patch/);
   });
 
   it("Phase 7-3/7-4: a run populates the DB read model", async () => {

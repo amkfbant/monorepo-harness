@@ -1123,7 +1123,7 @@ harness run artifact-get --run-id <id> --name final-diff.patch [--out path]
 harness run artifact-get --run-id <id> --artifact-id <artifact_id>
 ```
 
-- `run show`: `meta.json` から status / domain / safetyStatus / reviewer / parent / root / attempt / 変更ファイル数 / commands / PR を表示。backlog item は `backlog/` を逆引きして表示（`findBacklogItemForRun`）。個々の artifact が欠損していても落ちない
+- `run show`: `meta.json` から status / domain / safetyStatus / reviewer / parent / root / attempt / 変更ファイル数 / policy salvage（`policy-allowed.patch` の有無と next action）/ commands / PR を表示。backlog item は `backlog/` を逆引きして表示（`findBacklogItemForRun`）。個々の artifact が欠損していても落ちない
 - `run timeline`: `events.jsonl` を 1 行 1 イベントの順序付きリストに整形（events は wall-clock time を持たないため順序＝時系列。timestamp を持つイベントは併記）
 - `run artifacts`: run dir 直下のファイルを列挙
 - `run artifact-get`: artifact body を stdout（または `--out`、既存/新規を問わず書き込み前に `0600`）へ書く。`--name` と `--artifact-id` はちょうど 1 つだけ指定する。`storage='db'` は chunk/gzip を復元し、`storage='external'` は configured local blob store から読む。bodyless DB sidecar（`meta.json` / `events.jsonl` / `review-decision.yaml`）は DB から再構成する。`storage='file'` の artifact id は `auto` で relative_path に解決して run dir から読む。`redacted` / `secret_suspect` / prior-review 系 `quarantined` の body は返さない（v35 grandfathered recoverable rows はこれだけで拒否しない）。`--source files` では `--name` のみ受け付け、backslash / dotfile / traversal / symlink / run dir 外へ解決される path は拒否する

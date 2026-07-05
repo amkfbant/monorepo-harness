@@ -1,5 +1,9 @@
 import type { Violation } from "../policy/path-policy-validator.js";
-import type { RunStatus, SafetyStatus } from "../logging/run-log.js";
+import type {
+  PolicySalvageInfo,
+  RunStatus,
+  SafetyStatus,
+} from "../logging/run-log.js";
 import type { DiffStat } from "../git/diff.js";
 import type { ChangeBudget } from "../policy/schema.js";
 import type {
@@ -7,6 +11,7 @@ import type {
   DiffBudgetValidationResult,
 } from "../policy/diff-budget-validator.js";
 import { redactSecretLines } from "./secret-scan.js";
+import { pushPolicySalvageSection } from "./policy-salvage.js";
 
 export interface ChangeBudgetReport {
   status: DiffBudgetValidationResult["status"];
@@ -36,6 +41,7 @@ export interface SummaryInputs {
   codexStderrTail: string;
   codexEventsSummary?: string;
   diffCollectionError?: string;
+  policySalvage?: PolicySalvageInfo;
 }
 
 interface CommandReport {
@@ -153,6 +159,7 @@ export function buildSummary(i: SummaryInputs): string {
   } else {
     for (const v of i.violations) lines.push(`- ${v.path} (${v.reason})`);
   }
+  pushPolicySalvageSection(lines, i.policySalvage);
   pushChangeBudget(lines, i.diffStat, i.changeBudget);
   pushCommandResults(lines, i.commandResults);
   lines.push("");

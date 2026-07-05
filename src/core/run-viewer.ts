@@ -213,6 +213,18 @@ export async function renderRunShow(
     `  secret suspects: ${meta.secretSuspectCount ?? 0}`,
     `  ignored untracked: ${meta.ignoredUntrackedCount ?? 0}`,
   );
+  if (meta.policySalvage !== undefined) {
+    lines.push(
+      "",
+      "Policy salvage:",
+      `  allowed paths: ${meta.policySalvage.allowedPaths.length}`,
+      `  denied paths: ${meta.policySalvage.deniedPaths.length}`,
+      `  allowed-only patch: ${
+        meta.policySalvage.patchArtifact ?? "(none)"
+      }`,
+      `  next action: ${meta.policySalvage.recommendedNextAction}`,
+    );
+  }
 
   const cmds = Array.isArray(meta.commandResults) ? meta.commandResults : [];
   lines.push("", "Commands:");

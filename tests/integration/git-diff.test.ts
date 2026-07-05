@@ -3,7 +3,11 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { collectDiff, resolveBaseSha } from "../../src/git/diff.js";
+import {
+  collectDiff,
+  collectTrackedPatchForPaths,
+  resolveBaseSha,
+} from "../../src/git/diff.js";
 
 let repo: string;
 
@@ -340,5 +344,33 @@ describe("collectDiff", () => {
     const d = await collectDiff({ repoPath: repo, baseSha: await baseSha() });
     expect(d.trackedChangedPaths).toContain("apps/user/a.ts");
     expect(d.patch).toMatch(/\+export const a = 2;/);
+  });
+
+  it("collects tracked patch paths literally when filenames look like pathspec magic", async () => {
+    writeFileSync(join(repo, "README.md"), "base readme\n");
+    writeFileSync(join(repo, ":(glob)*"), "base literal\n");
+    execFileSync(
+      "git",
+      ["--literal-pathspecs", "add", "README.md", ":(glob)*"],
+      { cwd: repo },
+    );
+    execFileSync("git", ["commit", "-qm", "add literal pathspec fixture"], {
+      cwd: repo,
+    });
+    const base = await baseSha();
+
+    writeFileSync(join(repo, "README.md"), "denied readme\n");
+    writeFileSync(join(repo, ":(glob)*"), "allowed literal\n");
+
+    const patch = await collectTrackedPatchForPaths({
+      repoPath: repo,
+      baseSha: base,
+      paths: [":(glob)*"],
+    });
+
+    expect(patch).toMatch(/diff --git a\/:\(glob\)\* b\/:\(glob\)\*/);
+    expect(patch).toMatch(/\+allowed literal/);
+    expect(patch).not.toMatch(/README\.md/);
+    expect(patch).not.toMatch(/denied readme/);
   });
 });

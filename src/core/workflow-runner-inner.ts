@@ -37,7 +37,6 @@ import { buildSummary } from "../reporter/summary.js";
 import { buildKnowledgeCandidates } from "../reporter/knowledge-candidates.js";
 import { buildReviewRequest } from "../reporter/review-request.js";
 import { buildReviewDecision } from "../reporter/review-decision.js";
-import { buildUntrackedPatch, buildUntrackedDeniedReport, buildUntrackedSecretsReport } from "../reporter/untracked-patch.js";
 import { publishRedactedCodexEvents } from "../codex/events-lifecycle.js";
 import { redactClaudeEvents } from "../claude/redact-events.js";
 import { recordClaudeUsage } from "../db/repositories/claude-usage.js";
@@ -49,6 +48,7 @@ import {
 import { warnArtifactIngestFailed, warnUsageRecordFailed, elapsedMs } from "./workflow-runner-shared.js";
 import type { RunDomainCodingOpts, RunDomainCodingResult } from "./workflow-runner-shared.js";
 import { applyChangeBudgetOverride, diffAndValidate, evaluateChangeBudget, materializeParentWork, normalizeWorktreeIndexToBase, readOptionalUtf8, readRedactedStderrTail, readRedactedTail } from "./workflow-runner-diff.js";
+import { writePolicyArtifacts } from "./policy-salvage.js";
 
 export function snapshotReviewRuleForRun(input: {
   opts: RunDomainCodingOpts;
@@ -444,60 +444,23 @@ export async function runDomainCodingInner(
     const finalDiffStat = preBudgetStat ?? diff.stat;
     const safetyStatus = preSafetyStatus;
     const violations = preViolations;
-    // `violatedPaths` is derived from the PRE violation set, then used to split
-    // the POST-normalize `untrackedKept`: a committed out-of-scope file (now
-    // POST-untracked) is in PRE violatedPaths → untrackedDenied (metadata only,
-    // no bytes); a committed IN-scope new file (now POST-untracked, not a
-    // violation) → untrackedAllowed → reviewedPaths.
-    const violatedPaths = new Set<string>(violations.map((v) => v.path));
-    await log.setSafetyStatus(safetyStatus);
-
-    // Split untracked into (allowed, denied). Only allowed content is
-    // inlined into untracked-files.patch. Denied paths get a metadata-only
-    // report so reviewers can see *what* was there without harness
-    // persisting the bytes.
-    const untrackedAllowed: string[] = [];
-    const untrackedDenied: string[] = [];
-    for (const p of untrackedKept) {
-      if (violatedPaths.has(p)) untrackedDenied.push(p);
-      else untrackedAllowed.push(p);
-    }
-
-    await writeArtifact(join(log.runDir, "final-diff.patch"), diff.patch);
-    let secretSuspects: { path: string; reasons: string[] }[] = [];
-    if (untrackedAllowed.length > 0) {
-      await writeArtifact(
-        join(log.runDir, "untracked-files.txt"),
-        `${untrackedAllowed.join("\n")}\n`,
-      );
-      const result = await buildUntrackedPatch(wt.path, untrackedAllowed);
-      await writeArtifact(
-        join(log.runDir, "untracked-files.patch"),
-        result.patch,
-      );
-      secretSuspects = result.secretSuspects;
-      if (secretSuspects.length > 0) {
-        await writeArtifact(
-          join(log.runDir, "untracked-secrets.txt"),
-          buildUntrackedSecretsReport(secretSuspects),
-        );
-        await log.emit({
-          type: "secret_suspects_redacted",
-          count: secretSuspects.length,
-          paths: secretSuspects.map((s) => s.path),
-        });
-      }
-    }
-    if (untrackedDenied.length > 0) {
-      const deniedReport = await buildUntrackedDeniedReport(
-        wt.path,
-        untrackedDenied,
-      );
-      await writeArtifact(
-        join(log.runDir, "untracked-denied.txt"),
-        deniedReport,
-      );
-    }
+    const {
+      violatedPaths,
+      untrackedAllowed,
+      untrackedDenied,
+      secretSuspects,
+      policySalvage,
+    } = await writePolicyArtifacts({
+      log,
+      worktreePath: wt.path,
+      baseSha,
+      gitTimeoutMs,
+      safetyStatus,
+      trackedChangedPaths: diff.trackedChangedPaths,
+      finalDiffPatch: diff.patch,
+      violations,
+      untrackedKept,
+    });
     // Reviewed file set + content fingerprint over the final (post-command
     // if commands ran) worktree. `harness pr create` re-checks this to
     // refuse a PR if a reviewed file drifted after approval.
@@ -649,6 +612,7 @@ export async function runDomainCodingInner(
       ...(changeBudgetResult !== undefined
         ? { changeBudget: changeBudgetResult }
         : {}),
+      ...(policySalvage !== undefined ? { policySalvage } : {}),
       codexExitCode: codex.exitCode,
       codexTimedOut: codex.timedOut,
       commandResults,
@@ -697,6 +661,7 @@ export async function runDomainCodingInner(
         ...(changeBudgetResult !== undefined
           ? { changeBudget: changeBudgetResult }
           : {}),
+        ...(policySalvage !== undefined ? { policySalvage } : {}),
         codexExitCode: codex.exitCode,
         codexTimedOut: codex.timedOut,
         commandResults,
@@ -758,6 +723,7 @@ export async function runDomainCodingInner(
       ...(changeBudgetResult !== undefined
         ? { changeBudget: changeBudgetResult }
         : {}),
+      ...(policySalvage !== undefined ? { policySalvage } : {}),
       ...(reviewed ? { reviewed } : {}),
       finishedAt: new Date().toISOString(),
     });
