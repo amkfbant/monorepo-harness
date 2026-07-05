@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.23](https://github.com/amkfbant/monorepo-harness/compare/v0.7.22...v0.7.23) (2026-07-05)
+
+
+### Bug Fixes
+
+* **policy:** add allowed-only salvage patches ([1cc09d2](https://github.com/amkfbant/monorepo-harness/commit/1cc09d2b0e780d0ee0baf6527e1d5e79d423993c))
+
 ## [0.7.22](https://github.com/amkfbant/monorepo-harness/compare/v0.7.21...v0.7.22) (2026-07-05)
 
 
