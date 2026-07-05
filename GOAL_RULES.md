@@ -24,8 +24,9 @@
   緑になる粒度。
 - **codex レビュー** — 外部 LLM による差分レビュー。**必ず `harness codex exec` 透過ラッパ
   経由で起動し、`--harness-label` で review 種別を、適用可能な `--harness-hitch-id` /
-  `--harness-course-id` で usage を紐付ける**（READ 経路 #403。`-s read-only` ＋ stdin クローズ
-  `< /dev/null` で hang 回避）。正本は [`CLAUDE.md`](./CLAUDE.md):
+  `--harness-course-id` で usage を紐付ける**（READ 経路 #403。`-s read-only` ＋ prompt 引数つき
+  child stdin は wrapper が auto-close。`< /dev/null` は shell 側の明示として併用可）。
+  正本は [`CLAUDE.md`](./CLAUDE.md):
 
   ```
   # course 駆動下の hitch レビュー（label + 実在する ID を併記）

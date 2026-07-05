@@ -542,6 +542,29 @@ describe("harness codex exec (external usage)", () => {
     }
   });
 
+  it("consumes --harness-stdin and forwards the requested stdin mode", async () => {
+    const program = new Command();
+    program.exitOverride();
+    let capturedStdinMode: string | undefined;
+    let capturedCodexArgs: string[] | undefined;
+    registerCodexCommands(program, {
+      runExternalCodex: async (opts) => {
+        capturedStdinMode = opts.stdinMode;
+        capturedCodexArgs = opts.codexArgs;
+        return { exitCode: 0, eventsContent: "" };
+      },
+      writeStdout: () => {},
+    } as never);
+
+    await program.parseAsync([
+      "node", "harness", "codex", "exec",
+      "--harness-stdin=inherit", "-m", "x", "prompt",
+    ]);
+
+    expect(capturedStdinMode).toBe("inherit");
+    expect(capturedCodexArgs).toEqual(["-m", "x", "prompt"]);
+  });
+
   // P2-b: explicit --json in passthrough → raw JSONL on stdout (not reconstructed message).
   // Without explicit --json → reconstructed final message (existing behavior, still green).
   it("emits raw JSONL to stdout when caller explicitly passes --json", async () => {

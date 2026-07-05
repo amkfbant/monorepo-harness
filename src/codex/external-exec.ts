@@ -6,6 +6,7 @@ export interface WrapperFlags {
   runId: string | null;
   hitchId: string | null;
   courseId: string | null;
+  stdinMode: ExternalCodexRequestedStdin;
 }
 
 const HARNESS_FLAGS: Record<string, keyof WrapperFlags> = {
@@ -13,7 +14,56 @@ const HARNESS_FLAGS: Record<string, keyof WrapperFlags> = {
   "--harness-run-id": "runId",
   "--harness-hitch-id": "hitchId",
   "--harness-course-id": "courseId",
+  "--harness-stdin": "stdinMode",
 };
+
+export type ExternalCodexRequestedStdin = "auto" | "inherit" | "closed";
+export type ExternalCodexChildStdin = "inherit" | "closed";
+
+export interface ExternalCodexStdinResolution {
+  requested: ExternalCodexRequestedStdin;
+  childStdin: ExternalCodexChildStdin;
+  reason: string;
+}
+
+const DEFAULT_PROGRESS_HEARTBEAT_MS = 30_000;
+
+const CODEX_VALUE_OPTIONS = new Set([
+  "-c",
+  "--config",
+  "--enable",
+  "--disable",
+  "-i",
+  "--image",
+  "-m",
+  "--model",
+  "--local-provider",
+  "-p",
+  "--profile",
+  "-s",
+  "--sandbox",
+  "-C",
+  "--cd",
+  "--add-dir",
+  "--output-schema",
+  "--color",
+  "-o",
+  "--output-last-message",
+  "-a",
+  "--ask-for-approval",
+  "--approval-policy",
+  "--base",
+  "--commit",
+  "--title",
+]);
+
+const CODEX_EXEC_SUBCOMMANDS = new Set(["review", "resume", "help"]);
+
+function parseRequestedStdin(value: string): ExternalCodexRequestedStdin | null {
+  if (value === "" || value === "auto") return "auto";
+  if (value === "inherit" || value === "closed") return value;
+  return null;
+}
 
 function envOr(name: string): string | null {
   const v = process.env[name];
@@ -45,6 +95,7 @@ export function splitHarnessFlags(argv: string[]): {
     runId: envOr("HARNESS_RUN_ID"),
     hitchId: envOr("HARNESS_HITCH_ID"),
     courseId: envOr("HARNESS_COURSE_ID"),
+    stdinMode: "auto",
   };
   const codexArgs: string[] = [];
   let separatorSeen = false;
@@ -66,8 +117,20 @@ export function splitHarnessFlags(argv: string[]): {
         const key = HARNESS_FLAGS[tok.slice(0, eq)];
         if (key !== undefined) {
           const value = tok.slice(eq + 1);
-          if (key === "label") wrapper.label = value || "external";
-          else wrapper[key] = value || null;
+          if (key === "label") {
+            wrapper.label = value || "external";
+            continue;
+          }
+          if (key === "stdinMode") {
+            const stdinMode = parseRequestedStdin(value);
+            if (stdinMode !== null) {
+              wrapper.stdinMode = stdinMode;
+              continue;
+            }
+            codexArgs.push(tok);
+            continue;
+          }
+          wrapper[key] = value || null;
           continue; // single token consumed; never touches the next token
         }
       }
@@ -100,15 +163,96 @@ export function sniffModel(codexArgs: string[]): string | null {
   return null;
 }
 
+function optionName(token: string): string {
+  const eq = token.indexOf("=");
+  return eq === -1 ? token : token.slice(0, eq);
+}
+
+function findPromptArgument(codexArgs: readonly string[]): string | null {
+  let optionsEnabled = true;
+  let firstPositional = true;
+  let command: string | null = null;
+  let resumeUsesLast = false;
+  let resumeSessionSeen = false;
+  for (let i = 0; i < codexArgs.length; i++) {
+    const token = codexArgs[i] ?? "";
+    if (optionsEnabled && token === "--") {
+      optionsEnabled = false;
+      continue;
+    }
+    if (optionsEnabled && token.startsWith("-") && token !== "-") {
+      const name = optionName(token);
+      if (command === "resume" && name === "--last") resumeUsesLast = true;
+      if (!token.includes("=") && CODEX_VALUE_OPTIONS.has(name)) i++;
+      continue;
+    }
+    if (firstPositional && CODEX_EXEC_SUBCOMMANDS.has(token)) {
+      command = token;
+      firstPositional = false;
+      continue;
+    }
+    if (command === "resume" && !resumeUsesLast && !resumeSessionSeen && token !== "-") {
+      resumeSessionSeen = true;
+      continue;
+    }
+    return token;
+  }
+  return null;
+}
+
+export function resolveExternalCodexStdin(
+  codexArgs: readonly string[],
+  requested: ExternalCodexRequestedStdin,
+): ExternalCodexStdinResolution {
+  if (requested === "closed") {
+    return {
+      requested,
+      childStdin: "closed",
+      reason: "explicit --harness-stdin=closed",
+    };
+  }
+  if (requested === "inherit") {
+    return {
+      requested,
+      childStdin: "inherit",
+      reason: "explicit --harness-stdin=inherit",
+    };
+  }
+  const prompt = findPromptArgument(codexArgs);
+  if (prompt !== null && prompt !== "-") {
+    return {
+      requested,
+      childStdin: "closed",
+      reason: "prompt argument supplied; use --harness-stdin=inherit to append piped stdin",
+    };
+  }
+  return {
+    requested,
+    childStdin: "inherit",
+    reason: "prompt omitted or '-' supplied; codex may read stdin",
+  };
+}
+
+function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}m${rest.toString().padStart(2, "0")}s`;
+}
+
 export type SpawnImpl = (
   bin: string,
   args: string[],
   onStderr: (chunk: string) => void,
+  opts: { stdinMode: ExternalCodexChildStdin },
 ) => Promise<{ exitCode: number; stdout: string }>;
 
 export interface RunExternalCodexOpts {
   codexArgs: string[];
   codexBin?: string;
+  stdinMode?: ExternalCodexRequestedStdin;
+  progressHeartbeatMs?: number;
   onStderr?: (chunk: string) => void;
   spawnImpl?: SpawnImpl;
 }
@@ -118,9 +262,10 @@ export interface ExternalCodexResult {
   eventsContent: string;
 }
 
-const realSpawn: SpawnImpl = (bin, args, onStderr) =>
+const realSpawn: SpawnImpl = (bin, args, onStderr, opts) =>
   new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: ["inherit", "pipe", "pipe"] });
+    const childStdin = opts.stdinMode === "closed" ? "ignore" : "inherit";
+    const child = spawn(bin, args, { stdio: [childStdin, "pipe", "pipe"] });
     let stdout = "";
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (c: string) => (stdout += c));
@@ -147,12 +292,30 @@ export async function runExternalCodex(
   const args = ["exec", ...injectJsonFlag(opts.codexArgs)];
   const onStderr = opts.onStderr ?? ((c: string) => void process.stderr.write(c));
   const spawnImpl = opts.spawnImpl ?? realSpawn;
+  const stdin = resolveExternalCodexStdin(opts.codexArgs, opts.stdinMode ?? "auto");
+  const heartbeatMs = opts.progressHeartbeatMs ?? DEFAULT_PROGRESS_HEARTBEAT_MS;
+  const startedAt = Date.now();
+  const heartbeat =
+    heartbeatMs > 0
+      ? setInterval(() => {
+          onStderr(
+            `harness codex exec: still running after ${formatElapsed(Date.now() - startedAt)} ` +
+              `(stdin ${stdin.childStdin})\n`,
+          );
+        }, heartbeatMs)
+      : undefined;
+  heartbeat?.unref?.();
+  onStderr(`harness codex exec: stdin ${stdin.childStdin} (${stdin.reason})\n`);
   try {
-    const { exitCode, stdout } = await spawnImpl(bin, args, onStderr);
+    const { exitCode, stdout } = await spawnImpl(bin, args, onStderr, {
+      stdinMode: stdin.childStdin,
+    });
     return { exitCode, eventsContent: stdout };
   } catch (e) {
     onStderr(`harness codex exec: failed to spawn codex: ${(e as Error).message}\n`);
     return { exitCode: 127, eventsContent: "" };
+  } finally {
+    if (heartbeat !== undefined) clearInterval(heartbeat);
   }
 }
 
