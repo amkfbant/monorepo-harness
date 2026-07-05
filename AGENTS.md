@@ -1,5 +1,15 @@
 # Agent Operating Rules
 
+## Ops vs dev mode
+
+These rules govern *operating* the harness against a real target monorepo (ops
+mode). In ops mode the harness source (`src/`) is a pinned, immutable release
+tag and is **read-only** — do not edit it here; if a code change is needed,
+raise it in the dev clone. The authoritative definition of the two modes and how
+to tell them apart lives in [`CLAUDE.md`](./CLAUDE.md) ("モード（dev / ops）").
+When operating in ops mode, follow [`CLAUDE.md`](./CLAUDE.md) as the governing
+mode and procedure document.
+
 ## Hitch Convergence
 
 Do not continue fixing newly discovered issues indefinitely.
@@ -36,13 +46,3 @@ spec is [`docs/specs/spec-review-layer.md`](./docs/specs/spec-review-layer.md).
   this list is a snapshot. Do not let an auto-verify intent land as an external-evidence kind.
 - Editing a spec after ratify surfaces a specHash drift warning plus an ask_human diagnostic in
   convergence; it never blocks auto-close on its own.
-
-## Ops vs dev mode
-
-These rules govern *operating* the harness against a real target monorepo (ops
-mode). In ops mode the harness source (`src/`) is a pinned, immutable release
-tag and is **read-only** — do not edit it here; if a code change is needed,
-raise it in the dev clone. The authoritative definition of the two modes and how
-to tell them apart lives in [`CLAUDE.md`](./CLAUDE.md) ("モード（dev / ops）").
-When operating in ops mode, follow [`CLAUDE.md`](./CLAUDE.md) as the governing
-mode and procedure document.
