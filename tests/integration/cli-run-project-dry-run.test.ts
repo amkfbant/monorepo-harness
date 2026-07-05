@@ -100,7 +100,9 @@ describe("CLI run --project --dry-run", () => {
       "--dry-run",
     ]);
     expect(code).toBe(1);
-    expect(out).toMatch(/not defined/);
+    expect(out).toContain(
+      'domain "apps/ghost" is not defined in project "demo"; valid domains: apps/web',
+    );
   });
 
   it("exits 1 for a missing project", () => {

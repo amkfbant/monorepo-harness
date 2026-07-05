@@ -1008,6 +1008,53 @@ describe("course/phase CLI (SP-1)", () => {
     expect(shown.hitchIds).toContain(h.hitchId);
   });
 
+  it("phase start-hitch rejects an unknown project domain before creating a hitch", () => {
+    const { root } = setup();
+    const repo = setupRepo();
+    setupProjectHarness(root, repo);
+    const course = json<{ courseId: string }>(
+      runCli(root, [
+        "course",
+        "create",
+        "--project",
+        "demo",
+        "--title",
+        "Domain Course",
+        "--json",
+      ]),
+    );
+    const phase = json<{ phaseId: string }>(
+      runCli(root, [
+        "phase",
+        "add",
+        "--course",
+        course.courseId,
+        "--title",
+        "Domain Phase",
+        "--json",
+      ]),
+    );
+
+    const started = runCli(root, [
+      "phase",
+      "start-hitch",
+      phase.phaseId,
+      "--hitch-id",
+      "h-bad-domain",
+      "--title",
+      "Bad domain",
+      "--domain",
+      "apps/ghost",
+    ]);
+    expect(started.code).toBe(1);
+    expect(started.out).toContain(
+      'domain "apps/ghost" is not defined in project "demo"; valid domains: apps/user',
+    );
+    withSeedDb(root, (db) => {
+      expect(new HitchRepository(db).getSession("h-bad-domain")).toBeNull();
+    });
+  });
+
   it("phase unlink-hitch reports when no link existed", () => {
     const { root } = setup();
 

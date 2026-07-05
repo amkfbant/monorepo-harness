@@ -14,6 +14,7 @@ import {
   compileProjectPolicy,
   loadCompileInputs,
 } from "../project/policy-compiler.js";
+import { requireProjectDomain } from "../project/domain-validation.js";
 import { resolvePolicy } from "../policy/resolver.js";
 import { writeCompiledPolicyFiles } from "./policy-compile.js";
 
@@ -202,6 +203,7 @@ async function materializePolicySnapshot(
   if (domain === "") {
     throw new ProjectError(`project "${String(raw.project)}" has no domains`);
   }
+  requireProjectDomain(resolved.profile, String(raw.project), domain);
   const repoSignals = await scanRepoSignals(resolved.repoPath);
   const inputs = await loadCompileInputs(resolved.profile, resolved.profilePath, {
     templatesDir: paths.templatesDir,
@@ -209,11 +211,6 @@ async function materializePolicySnapshot(
     generatedAt: new Date().toISOString(),
   });
   const compiled = compileProjectPolicy(inputs);
-  if (!Object.prototype.hasOwnProperty.call(compiled.repoPolicy.domains, domain)) {
-    throw new ProjectError(
-      `domain "${domain}" is not defined in project "${String(raw.project)}"`,
-    );
-  }
   const policy = resolvePolicy(compiled.globalPolicy, compiled.repoPolicy, domain);
   const handle = openManagedDb({ dbPath: paths.dbPath });
   try {
