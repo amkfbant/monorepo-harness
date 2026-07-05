@@ -12,7 +12,8 @@ import { awaitHitchMerge, awaitStepFromCloseResult, type AwaitMergeStep } from "
 import { linkAgentWorkspaceToHitch } from "../../workspace/workspace-hitch-link.js";
 import { decideOrchestratorAction } from "../../hitch/orchestrator-dispatch.js";
 import { createOrchestratorRunners, HitchNotCloseReadyError } from "../../hitch/orchestrator-runners.js";
-import { assertHitchOrchestrateSchemaCompatible, formatHitchOrchestrateResultLine, HitchCliError, latestAdoptedPrEvent, parseMergeMethod, parseNonNegativeInt, parsePositiveInt, type RegisterHitchCommandsOptions, resolveHitchCloseRunnerDeps, resolveHitchCoderRunnerDeps, withHitchErrorExit, withHitchErrorExitAsync, withHitchRepo, writeConvergence } from "./helpers.js";
+import { assertHitchOrchestrateSchemaCompatible, HitchCliError, latestAdoptedPrEvent, parseMergeMethod, parseNonNegativeInt, parsePositiveInt, type RegisterHitchCommandsOptions, resolveHitchCloseRunnerDeps, resolveHitchCoderRunnerDeps, withHitchErrorExit, withHitchErrorExitAsync, withHitchRepo, writeConvergence } from "./helpers.js";
+import { formatHitchOrchestrateProgressLine, formatHitchOrchestrateResultLine } from "./orchestrate-format.js";
 import { ingestClaudeSubagentUsage } from "../../telemetry/ingest-claude-subagent-usage.js";
 
 /**
@@ -194,6 +195,9 @@ export function registerHitchConvergenceCommands(
           }),
           maxSteps: parsePositiveInt(raw.maxSteps ?? 50, "--max-steps"),
           createdBy: "cli",
+          onProgress: (event) => {
+            process.stderr.write(`${formatHitchOrchestrateProgressLine(event)}\n`);
+          },
         });
         // Best-effort: if this ran in an agent worktree, link the workspace to
         // the hitch so `workspace status` reflects who is driving it. Never fails

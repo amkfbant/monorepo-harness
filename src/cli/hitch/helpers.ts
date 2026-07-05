@@ -19,7 +19,6 @@ import { findTransientLeaseCause } from "../../workspace/db-domain-lock.js";
 import { type OrchestratorRunnerDeps } from "../../hitch/orchestrator-runners.js";
 import { HitchRepository, type CompleteHitchReviewCycleInput } from "../../hitch/repository.js";
 import { HITCH_SCOPE_STATUSES, HitchValidationError, type HitchEvidence, type HitchFinding, type HitchConvergenceResult, type HitchScopeStatus } from "../../hitch/types.js";
-import type { HitchOrchestrationResult } from "../../hitch/orchestrator-types.js";
 import { prepareProjectRun } from "../../project/run-project.js";
 import { formatHitchEvidenceLines, formatHitchTokenUsageLine } from "./evidence-format.js";
 
@@ -187,22 +186,6 @@ export async function resolveHitchCoderRunnerDeps(input: {
   };
 }
 
-
-export function formatHitchOrchestrateResultLine(
-  hitchId: string,
-  result: HitchOrchestrationResult,
-  link: { linked: boolean; agent?: string },
-): string {
-  return (
-    `hitch=${hitchId} outcome=${result.outcome}` +
-    (result.draft !== undefined ? ` draft=${result.draft}` : "") +
-    (result.prUrl !== undefined ? ` pr=${result.prUrl}` : "") +
-    (result.escalateReason !== undefined
-      ? ` escalate=${result.escalateReason}`
-      : "") +
-    (link.linked ? ` workspace=${link.agent}` : "")
-  );
-}
 
 export function formatHitchStatusLine(result: {
   session: {

@@ -9,8 +9,10 @@ import { findTransientLeaseCause } from "../workspace/db-domain-lock.js";
 import type {
   OrchestrationOutcome,
   HitchOrchestrationResult,
+  OrchestrationProgressEvent,
   OrchestrationStep,
   OrchestratorRunners,
+  OrchestratorAction,
 } from "./orchestrator-types.js";
 
 export interface HitchOrchestratorOpts {
@@ -38,7 +40,16 @@ export interface RunOrchestrationInput {
    * SIGKILLs the in-flight codex process.
    */
   signal?: AbortSignal;
+  /**
+   * Optional human-visible progress sink for standalone drivers. It is
+   * observational only: failures in the sink never affect hitch state.
+   */
+  onProgress?: (event: OrchestrationProgressEvent) => void;
+  /** Wall-clock heartbeat cadence while a runner step is still in flight. */
+  progressHeartbeatMs?: number;
 }
+
+const DEFAULT_PROGRESS_HEARTBEAT_MS = 30_000;
 
 /**
  * The error to throw when the drive is aborted (#132): the abort reason set by
@@ -56,6 +67,88 @@ function abortCause(signal: AbortSignal): unknown {
  */
 function driveAborted(signal: AbortSignal | undefined): signal is AbortSignal {
   return signal?.aborted === true;
+}
+
+function progressElapsed(startedAt: number): number {
+  return Math.max(0, Date.now() - startedAt);
+}
+
+function emitProgress(
+  input: RunOrchestrationInput,
+  event: OrchestrationProgressEvent,
+): void {
+  try {
+    input.onProgress?.(event);
+  } catch {
+    // Progress output is advisory; hitch state transitions must not depend on it.
+  }
+}
+
+function maybeUnrefTimer(timer: ReturnType<typeof setInterval>): void {
+  const candidate = timer as unknown as { unref?: unknown };
+  if (typeof candidate.unref === "function") candidate.unref();
+}
+
+async function withStepProgress<T>(
+  input: RunOrchestrationInput,
+  step: number,
+  decision: string,
+  action: OrchestratorAction["kind"],
+  run: () => Promise<T>,
+  detail: (result: T) => string,
+): Promise<T> {
+  const startedAt = Date.now();
+  emitProgress(input, {
+    kind: "step_started",
+    hitchId: input.hitchId,
+    step,
+    decision,
+    action,
+  });
+  const heartbeatMs = Math.max(
+    1,
+    input.progressHeartbeatMs ?? DEFAULT_PROGRESS_HEARTBEAT_MS,
+  );
+  const heartbeat =
+    input.onProgress === undefined
+      ? undefined
+      : setInterval(() => {
+          emitProgress(input, {
+            kind: "step_heartbeat",
+            hitchId: input.hitchId,
+            step,
+            decision,
+            action,
+            elapsedMs: progressElapsed(startedAt),
+          });
+        }, heartbeatMs);
+  if (heartbeat !== undefined) maybeUnrefTimer(heartbeat);
+  try {
+    const result = await run();
+    emitProgress(input, {
+      kind: "step_completed",
+      hitchId: input.hitchId,
+      step,
+      decision,
+      action,
+      detail: detail(result),
+      elapsedMs: progressElapsed(startedAt),
+    });
+    return result;
+  } catch (e) {
+    emitProgress(input, {
+      kind: "step_failed",
+      hitchId: input.hitchId,
+      step,
+      decision,
+      action,
+      detail: e instanceof Error ? e.message : String(e),
+      elapsedMs: progressElapsed(startedAt),
+    });
+    throw e;
+  } finally {
+    if (heartbeat !== undefined) clearInterval(heartbeat);
+  }
 }
 
 export class HitchOrchestrator {
@@ -98,17 +191,38 @@ export class HitchOrchestrator {
       // step, flip the hitch to `escalated`, and return.
       try {
         if (action.kind === "coder") {
-          const r = await input.runners.coder(input.hitchId);
+          const r = await withStepProgress(
+            input,
+            i,
+            finalDecision,
+            action.kind,
+            () => input.runners.coder(input.hitchId),
+            (result) => `${result.runStatus} run=${result.runId}`,
+          );
           steps.push({ step: i, decision: finalDecision, action: "coder", detail: r.runStatus });
           continue;
         }
         if (action.kind === "review") {
-          const r = await input.runners.review(input.hitchId);
+          const r = await withStepProgress(
+            input,
+            i,
+            finalDecision,
+            action.kind,
+            () => input.runners.review(input.hitchId),
+            (result) => `${result.decision} run=${result.runId}`,
+          );
           steps.push({ step: i, decision: finalDecision, action: "review", detail: r.decision });
           continue;
         }
         if (action.kind === "close_check") {
-          const r = await input.runners.closeCheck(input.hitchId);
+          const r = await withStepProgress(
+            input,
+            i,
+            finalDecision,
+            action.kind,
+            () => input.runners.closeCheck(input.hitchId),
+            (result) => `${result.passed}/${result.checked} passed run=${result.runId}`,
+          );
           steps.push({
             step: i,
             decision: finalDecision,
@@ -118,7 +232,14 @@ export class HitchOrchestrator {
           continue;
         }
         if (action.kind === "classify") {
-          const r = await input.runners.classify(input.hitchId);
+          const r = await withStepProgress(
+            input,
+            i,
+            finalDecision,
+            action.kind,
+            () => input.runners.classify(input.hitchId),
+            (result) => `resolved=${result.resolved}`,
+          );
           steps.push({ step: i, decision: finalDecision, action: "classify", detail: String(r.resolved) });
           if (!r.resolved) {
             // (#230 / WI-9b) Persist the consultant-grade decision packet to
@@ -213,7 +334,14 @@ export class HitchOrchestrator {
           continue;
         }
         if (action.kind === "defer") {
-          const r = await input.runners.defer(input.hitchId);
+          const r = await withStepProgress(
+            input,
+            i,
+            finalDecision,
+            action.kind,
+            () => input.runners.defer(input.hitchId),
+            (result) => `deferred=${result.deferred}`,
+          );
           steps.push({ step: i, decision: finalDecision, action: "defer", detail: String(r.deferred) });
           continue;
         }
@@ -238,7 +366,19 @@ export class HitchOrchestrator {
           steps.push({ step: i, decision: finalDecision, action: "close_and_pr", detail: "halted before PR (stopAtCloseReady)" });
           return { hitchId: input.hitchId, outcome: "close_ready", steps, finalDecision };
         }
-        const pr = await input.runners.closeAndPr(input.hitchId);
+        const pr = await withStepProgress(
+          input,
+          i,
+          finalDecision,
+          "close_and_pr",
+          () => input.runners.closeAndPr(input.hitchId),
+          (result) =>
+            result.escalateReason !== undefined
+              ? `escalate=${result.escalateReason}`
+              : result.pushRetryPending === true
+                ? `push_retry_pending pr=${result.prUrl}`
+                : `pr=${result.prUrl}`,
+        );
         // Phase 3: a hard-blocked auto-merge gate escalates rather than closing.
         if (pr.escalateReason !== undefined) {
           steps.push({ step: i, decision: finalDecision, action: "escalate", detail: pr.escalateReason });

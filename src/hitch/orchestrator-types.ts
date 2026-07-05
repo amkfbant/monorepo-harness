@@ -79,6 +79,41 @@ export interface OrchestrationStep {
   detail: string;
 }
 
+export type OrchestrationProgressEvent =
+  | {
+      kind: "step_started";
+      hitchId: string;
+      step: number;
+      decision: string;
+      action: OrchestratorAction["kind"];
+    }
+  | {
+      kind: "step_heartbeat";
+      hitchId: string;
+      step: number;
+      decision: string;
+      action: OrchestratorAction["kind"];
+      elapsedMs: number;
+    }
+  | {
+      kind: "step_completed";
+      hitchId: string;
+      step: number;
+      decision: string;
+      action: OrchestratorAction["kind"];
+      detail: string;
+      elapsedMs: number;
+    }
+  | {
+      kind: "step_failed";
+      hitchId: string;
+      step: number;
+      decision: string;
+      action: OrchestratorAction["kind"];
+      detail: string;
+      elapsedMs: number;
+    };
+
 export type OrchestrationOutcome =
   | "closed"
   | "cancelled"

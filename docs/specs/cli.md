@@ -515,6 +515,15 @@ diff を後で集約したい場合は、hitch の close 条件に required な 
 `hitch finding classify --then-rerun` は drive-only caller として `stopAtCloseReady`
 を使うため、同じ `close_ready` でも PR を開かず停止する。
 
+`hitch orchestrate` は各 runner step の開始・30 秒ごとの heartbeat・完了/失敗を stderr
+に表示する（例:
+`hitch <id>: step 2 decision=continue action=review completed detail="approved run=run-..." elapsed=4s`）。
+長時間の coder / reviewer / close-and-PR / auto-merge gate 待ちが、親プロセスの hang と
+区別できることが契約である。stdout の最終 1 行は従来の `hitch=<id> outcome=<status>`
+に加え、`decision=<decision>` / `steps=<n>` / `last_action=<action>` /
+`last_detail="<detail>"` / `next_action="<operator action>"` を含む。`next_action` は
+状態遷移の入力ではなく、operator 向けの推奨手順である。
+
 `hitch status --json` は session / findings / convergence decisions /
 close checks / current convergence に加え、`lifecycleEvents`（`closed` /
 `cancelled` / `reopened` / `pr_adopted` / `updated` / `diverging_recovered` の
@@ -730,7 +739,9 @@ scope widen として `--allow-scope-widen` が必要（`notes` のみは非意�
 escalated）まで bounded loop（`--max-steps`、既定 50）で自律駆動する。`--dry-run`
 は次の action のみ表示し実行しない。PR 作成を伴う結果では、typed outcome の値は
 `pr_created` / `merged` のまま変えず、one-line 出力に `draft=true|false` を別フィールド
-として表示する（例: `outcome=pr_created draft=true pr=<url>`）。**`--auto-merge`（既定 OFF）** を付けると
+として表示する（例: `outcome=pr_created ... draft=true pr=<url>`）。最終行には
+`decision` / `steps` / `last_action` / `last_detail` / `next_action` も含まれ、各 step
+の開始・heartbeat・完了/失敗は stderr に出る。**`--auto-merge`（既定 OFF）** を付けると
 ready PR を作成する前に merge gate の approval preflight（close-ready ∧
 （consensus approved(quorum) または human override））を評価し、preflight hard blocker は PR
 公開前に escalate する（既存 ready PR がある retry ではその PR は残る）。hard-block

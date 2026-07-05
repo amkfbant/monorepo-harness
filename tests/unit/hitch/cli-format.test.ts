@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatHitchOrchestrateProgressLine,
   formatHitchOrchestrateResultLine,
   formatHitchStatusLine,
 } from "../../../src/cli/hitch.js";
@@ -19,9 +20,41 @@ describe("hitch CLI formatting", () => {
       { linked: false },
     );
 
-    expect(line).toContain("outcome=pr_created draft=true");
+    expect(line).toContain("outcome=pr_created");
+    expect(line).toContain("draft=true");
+    expect(line).toContain("decision=close_ready");
+    expect(line).toContain("steps=0");
+    expect(line).toContain(
+      'next_action="wait for PR review/CI, then run hitch await-merge or merge manually"',
+    );
     expect(line).toContain("pr=https://example.test/pr/1");
     expect(line).not.toContain("pr_created(draft)");
+  });
+
+  it("formats orchestrate progress events for stderr", () => {
+    expect(
+      formatHitchOrchestrateProgressLine({
+        kind: "step_started",
+        hitchId: "g-progress",
+        step: 2,
+        decision: "continue",
+        action: "review",
+      }),
+    ).toBe("hitch g-progress: step 2 decision=continue action=review started");
+
+    expect(
+      formatHitchOrchestrateProgressLine({
+        kind: "step_completed",
+        hitchId: "g-progress",
+        step: 2,
+        decision: "continue",
+        action: "review",
+        detail: "approved run=run-1",
+        elapsedMs: 1200,
+      }),
+    ).toBe(
+      'hitch g-progress: step 2 decision=continue action=review completed detail="approved run=run-1" elapsed=2s',
+    );
   });
 
   it("labels passed review_consensus checks as static-only approval", () => {
