@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.22](https://github.com/amkfbant/monorepo-harness/compare/v0.7.21...v0.7.22) (2026-07-05)
+
+
+### Bug Fixes
+
+* **hitch:** surface orchestrate progress ([#438](https://github.com/amkfbant/monorepo-harness/issues/438)) ([576e52b](https://github.com/amkfbant/monorepo-harness/commit/576e52bd7d2b7b2718977c7d491492895404393b))
+
 ## [0.7.21](https://github.com/amkfbant/monorepo-harness/compare/v0.7.20...v0.7.21) (2026-07-05)
 
 
