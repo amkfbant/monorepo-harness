@@ -1,8 +1,13 @@
 import type { Violation } from "../policy/path-policy-validator.js";
-import type { RunStatus, SafetyStatus } from "../logging/run-log.js";
+import type {
+  PolicySalvageInfo,
+  RunStatus,
+  SafetyStatus,
+} from "../logging/run-log.js";
 import type { DiffStat } from "../git/diff.js";
 import type { ChangeBudgetReport } from "./summary.js";
 import { redactSecretLines } from "./secret-scan.js";
+import { pushPolicySalvageSection } from "./policy-salvage.js";
 
 export interface ReviewRequestInputs {
   runId: string;
@@ -27,6 +32,7 @@ export interface ReviewRequestInputs {
   codexStderrTail: string;
   codexEventsSummary?: string;
   diffCollectionError?: string;
+  policySalvage?: PolicySalvageInfo;
   finalDiffPath: string;
   untrackedPatchPath?: string;
   summaryPath: string;
@@ -156,6 +162,7 @@ export function buildReviewRequest(i: ReviewRequestInputs): string {
   } else {
     for (const v of i.violations) lines.push(`- \`${v.path}\` — ${v.reason}`);
   }
+  pushPolicySalvageSection(lines, i.policySalvage);
   pushChangeBudget(lines, i.diffStat, i.changeBudget);
   pushCommandResults(lines, i.commandResults);
   lines.push("");

@@ -55,25 +55,29 @@
 20. write final-diff.patch
 21. write untracked-files.{txt,patch} for allowed (with secret-scan redaction;
     inline-sized UTF-8 text is full-content scanned before any patch bytes are saved)
-22. write untracked-denied.txt for denied (metadata only)
-23. write untracked-secrets.txt for secret suspects (metadata only)
-24. emit diff_collected (stage = post-command if commands ran, else post-codex, durationMs)
-25. determine RunStatus from priority:
+22. write untracked-secrets.txt for secret suspects (metadata only)
+23. write untracked-denied.txt for denied (metadata only)
+24. if safetyStatus=denied and the run also has policy-allowed paths, write
+    `policy-allowed.patch` containing only allowed tracked paths plus allowed
+    untracked patch content; record `meta.policySalvage` with allowed/denied
+    path counts and the recommended next action. The run still fails closed.
+25. emit diff_collected (stage = post-command if commands ran, else post-codex, durationMs)
+26. determine RunStatus from priority:
     diff failure > codex timeout > codex non-zero > policy violation
     > enforced budget exceeded > command failure > needs_review
-26. readRedactedTail(codex-output.log), readRedactedStderrTail(codex-error.log);
+27. readRedactedTail(codex-output.log), readRedactedStderrTail(codex-error.log);
     summary/review-request 用の stdout/stderr tail は command-log と同じ
     行単位 secret redaction を全文に適用してから tail 化する
     codex が失敗（exitCode != 0 / timedOut）した場合は、publish 済みの
     redacted `codex-events.jsonl` から events tail を要約
-27. write summary.md
-28. write knowledge-candidates.yaml (4 signal kinds)
-29. write review-decision.yaml (initial: pending)
-30. write review-request.md
-31. ingestRunArtifacts into the DB; emit artifacts_ingested (count, totalBytes, durationMs)
-32. finalize(meta, status, safetyStatus, counts, commandResults, finishedAt)
-33. emit run_completed (runElapsedMs)
-34. release domain lock (finally)
+28. write summary.md
+29. write knowledge-candidates.yaml (4 signal kinds)
+30. write review-decision.yaml (initial: pending)
+31. write review-request.md
+32. ingestRunArtifacts into the DB; emit artifacts_ingested (count, totalBytes, durationMs)
+33. finalize(meta, status, safetyStatus, counts, commandResults, finishedAt)
+34. emit run_completed (runElapsedMs)
+35. release domain lock (finally)
 ```
 
 ステップ 16/17 の 2 pass 構成が F8（コマンドの副作用も path policy で再検査）の核心。`allowedCommands` が無ければ pass 2 は skip され、pass 1 の結果がそのまま使われる。
@@ -185,6 +189,7 @@ runs/<runId>/
   codex-error.log          # codex stderr (生; summary/review-request へ載せる tail は readRedactedStderrTail で patch echo 抑制 + secret line redaction)
   codex-events.jsonl       # codex `--json` stdout の JSONL events (raw stdout は一時 dotfile に隔離し、redaction 後に atomic publish; command aggregated_output / text / command / command_name / name は shared secret heuristic redaction 済み; turn.completed.usage を含み、run_usage の入力になる。redaction 失敗時は redaction.failed sentinel のみ)
   final-diff.patch         # tracked changes の unified diff (against baseSha)。常に生成 (変更なしなら空)
+  policy-allowed.patch     # OPTIONAL: policy-denied run に allowed path も含まれる場合のみ。denied path を除外した recovery/audit 用 patch
   untracked-files.patch    # OPTIONAL: allowed untracked がある場合のみ。inline-sized UTF-8 text は全文 secret scan 後に保存し、hit は redact
   untracked-files.txt      # OPTIONAL: allowed untracked がある場合のみ。path list
   untracked-denied.txt     # OPTIONAL: denied untracked がある場合のみ。size + sha256、content なし
@@ -213,6 +218,14 @@ name-based assignment / bearer / verified Basic auth / vendor token 判定は
 command-log と同じ semantics で効く。`codex-error.log` は既存どおり patch echo
 suppression（`diff --git` 以降 omit）を適用した上で redaction / tail 化する。
 clean な tail 行はそのまま表示される。
+
+**policy salvage (#426)**: `safetyStatus=denied` の run に policy-allowed path
+も含まれる場合、run は従来通り `failed-policy-violation` のまま fail-closed
+する。その上で `policy-allowed.patch` を artifact として保存し、
+`meta.policySalvage` / `summary.md` / `review-request.md` / `run show` に
+allowed path 数、denied path 数、artifact 名、推奨 next action を表示する。
+この patch は denied path を含めないため、operator は fresh scoped run への
+再適用候補として監査できる。PR gate は変わらず、failed run を直接 PR 化しない。
 
 ## Phase 5: project-driven run
 

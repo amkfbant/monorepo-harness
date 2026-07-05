@@ -303,6 +303,7 @@ export function createDbRunLog(opts: CreateDbRunLogOpts): RunLog {
         changedFilesCount: p.changedFilesCount,
         ...(p.diffStat ? { diffStat: p.diffStat } : {}),
         ...(p.changeBudget ? { changeBudget: p.changeBudget } : {}),
+        ...(p.policySalvage ? { policySalvage: p.policySalvage } : {}),
         ...(p.reviewed ? { reviewed: p.reviewed } : {}),
         finishedAt: p.finishedAt,
       };

@@ -53,6 +53,14 @@ export const SAFETY_STATUSES = ["allowed", "denied", "skipped"] as const;
 
 export type SafetyStatus = (typeof SAFETY_STATUSES)[number];
 
+export interface PolicySalvageInfo {
+  available: boolean;
+  allowedPaths: string[];
+  deniedPaths: string[];
+  patchArtifact?: string;
+  recommendedNextAction: string;
+}
+
 export interface RunMeta {
   runId: string;
   repoId: string;
@@ -113,6 +121,12 @@ export interface RunMeta {
     budget: ChangeBudget;
     breaches: DiffBudgetBreach[];
   };
+  /**
+   * Present when policy validation denied the run. If `available=true`, the
+   * run still failed closed, but `patchArtifact` contains only policy-allowed
+   * paths so an operator can audit/reapply those changes in a fresh scoped run.
+   */
+  policySalvage?: PolicySalvageInfo;
   /**
    * runId of the run this one was spawned from via `harness rerun`. The
    * source run is typically in 'changes_requested' state; recording the
@@ -202,6 +216,7 @@ export interface RunLog {
     changedFilesCount: number;
     diffStat?: RunMeta["diffStat"];
     changeBudget?: RunMeta["changeBudget"];
+    policySalvage?: RunMeta["policySalvage"];
     reviewed?: RunMeta["reviewed"];
     finishedAt: string;
   }): Promise<void>;
@@ -250,6 +265,7 @@ export async function createRunLog(opts: {
       changedFilesCount,
       diffStat,
       changeBudget,
+      policySalvage,
       reviewed,
       finishedAt,
     }) {
@@ -262,6 +278,7 @@ export async function createRunLog(opts: {
         changedFilesCount,
         ...(diffStat ? { diffStat } : {}),
         ...(changeBudget ? { changeBudget } : {}),
+        ...(policySalvage ? { policySalvage } : {}),
         ...(reviewed ? { reviewed } : {}),
         finishedAt,
       });
