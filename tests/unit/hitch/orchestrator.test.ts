@@ -6,7 +6,10 @@ import { openManagedDb } from "../../../src/db/managed-connection.js";
 import { runMigrations } from "../../../src/db/migrations.js";
 import { HitchRepository } from "../../../src/hitch/repository.js";
 import { HitchOrchestrator } from "../../../src/hitch/orchestrator.js";
-import type { OrchestratorRunners } from "../../../src/hitch/orchestrator-types.js";
+import type {
+  OrchestrationProgressEvent,
+  OrchestratorRunners,
+} from "../../../src/hitch/orchestrator-types.js";
 import type { HitchDecisionPacket } from "../../../src/hitch/jury/types.js";
 import { RunFinalizedError } from "../../../src/core/workflow-runner.js";
 import {
@@ -71,6 +74,50 @@ describe("HitchOrchestrator", () => {
     expect(result.draft).toBe(true);
     expect(result.prUrl).toBe("https://example/pr/1");
     expect(calls).toContain("closeAndPr");
+  });
+
+  it("emits progress heartbeats while a runner step is still in flight", async () => {
+    const dbPath = freshDbPath();
+    const { db, close } = openManagedDb({ dbPath });
+    try {
+      runMigrations(db);
+      new HitchRepository(db).createSession({
+        hitchId: "g-progress",
+        title: "Progress",
+        projectId: "demo",
+        closeConditions: [],
+        createdBy: "test",
+        createdSource: "worker",
+      });
+    } finally {
+      close();
+    }
+    const progress: OrchestrationProgressEvent[] = [];
+    const runners: OrchestratorRunners = {
+      ...fakeRunners([]),
+      coder: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { runId: "r-progress", runStatus: "needs_review" };
+      },
+    };
+
+    const result = await new HitchOrchestrator({ dbPath }).run({
+      hitchId: "g-progress",
+      runners,
+      maxSteps: 1,
+      createdBy: "worker",
+      onProgress: (event) => progress.push(event),
+      progressHeartbeatMs: 1,
+    });
+
+    expect(result.outcome).toBe("max_steps_exhausted");
+    expect(progress).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "step_started", action: "coder" }),
+        expect.objectContaining({ kind: "step_heartbeat", action: "coder" }),
+        expect.objectContaining({ kind: "step_completed", action: "coder" }),
+      ]),
+    );
   });
 
   it("aborts the drive fail-closed (no runner call, propagates the lease cause) when the signal is already aborted (#132)", async () => {

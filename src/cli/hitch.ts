@@ -15,10 +15,13 @@ export {
   resolveHitchCloseRunnerDeps,
   resolveHitchCoderRunnerDeps,
   mapHitchErrorExit,
-  formatHitchOrchestrateResultLine,
   formatHitchStatusLine,
   formatHitchFindingList,
 } from "./hitch/helpers.js";
+export {
+  formatHitchOrchestrateProgressLine,
+  formatHitchOrchestrateResultLine,
+} from "./hitch/orchestrate-format.js";
 export type { RegisterHitchCommandsOptions } from "./hitch/helpers.js";
 
 /**

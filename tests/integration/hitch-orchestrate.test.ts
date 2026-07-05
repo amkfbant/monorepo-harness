@@ -14,6 +14,7 @@ import { runMigrations } from "../../src/db/migrations.js";
 import { ExternalReviewEventRepository } from "../../src/db/repositories/external-review-events.js";
 import { HitchRepository } from "../../src/hitch/repository.js";
 import { HitchOrchestrator } from "../../src/hitch/orchestrator.js";
+import type { OrchestrationProgressEvent } from "../../src/hitch/orchestrator-types.js";
 import { ConvergenceService } from "../../src/hitch/convergence.js";
 import {
   awaitHitchMerge,
@@ -499,11 +500,13 @@ describe("hitch orchestrate (real git + fake codex)", () => {
       resolveRunContext,
     });
 
+    const progress: OrchestrationProgressEvent[] = [];
     const result = await new HitchOrchestrator({ dbPath: f.dbPath }).run({
       hitchId,
       runners,
       maxSteps: 20,
       createdBy: "test",
+      onProgress: (event) => progress.push(event),
     });
 
     // terminal: the orchestrator drove coder → review → close → PR with no
@@ -515,6 +518,41 @@ describe("hitch orchestrate (real git + fake codex)", () => {
 
     // the very first orchestrator step is the coder pass it created itself.
     expect(result.steps[0]?.action).toBe("coder");
+    expect(progress).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "step_started",
+          hitchId,
+          step: 1,
+          action: "coder",
+        }),
+        expect.objectContaining({
+          kind: "step_completed",
+          hitchId,
+          step: 1,
+          action: "coder",
+        }),
+        expect.objectContaining({
+          kind: "step_started",
+          hitchId,
+          action: "review",
+        }),
+        expect.objectContaining({
+          kind: "step_completed",
+          hitchId,
+          action: "close_and_pr",
+        }),
+      ]),
+    );
+    const coderComplete = progress.find(
+      (
+        event,
+      ): event is Extract<
+        OrchestrationProgressEvent,
+        { kind: "step_completed" }
+      > => event.kind === "step_completed" && event.action === "coder",
+    );
+    expect(coderComplete?.detail).toMatch(/^needs_review run=run-/);
 
     // the run branch was pushed to the bare remote
     const branches = execFileSync(
