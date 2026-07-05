@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.21](https://github.com/amkfbant/monorepo-harness/compare/v0.7.20...v0.7.21) (2026-07-05)
+
+
+### Bug Fixes
+
+* **convergence:** consume attached review evidence ([#436](https://github.com/amkfbant/monorepo-harness/issues/436)) ([47bb5d0](https://github.com/amkfbant/monorepo-harness/commit/47bb5d0d6f5d6b14aac827cd7a909bef04455c5c))
+
 ## [0.7.20](https://github.com/amkfbant/monorepo-harness/compare/v0.7.19...v0.7.20) (2026-07-04)
 
 
