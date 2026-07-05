@@ -172,7 +172,9 @@ npm run harness -- <args>   # 開発時の CLI 起動（tsx 経由、HARNESS_ROO
 - **codex exec レビュー（hitch モード外の通常 PR にも適用）**: 実質的な変更の PR は
   **merge 前に `harness codex exec` 経由で差分レビュー**する。コマンドは常に
   `harness codex exec --harness-label=pr-review -- -m gpt-5.5 -c model_reasoning_effort="xhigh" -s read-only -o <out> "<prompt>" < /dev/null`
-  （`-s read-only` ＋ **stdin クローズ（`< /dev/null`）で hang 回避**。course/hitch 駆動の
+  （`-s read-only` ＋ prompt 引数つきでは wrapper が child stdin を auto-close する。
+  `< /dev/null` は shell 側の明示として併用可。pipe stdin を意図的に append するときだけ
+  `--harness-stdin=inherit` を使う。course/hitch 駆動の
   一環なら `--harness-label` は残したまま、実在する `--harness-hitch-id` / `--harness-course-id`
   を追加する）。**P0 / P1 は
   修正必須**、P2 は修正 or `docs/future-features.md` に defer（理由を記録）。PR の

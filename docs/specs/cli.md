@@ -2324,6 +2324,7 @@ Exit code は `harness course` と同じ（0 / 1 / 2）。
 ```bash
 harness codex exec [--harness-label=<label>] [--harness-run-id=<id>]
                    [--harness-hitch-id=<id>] [--harness-course-id=<id>]
+                   [--harness-stdin=auto|inherit|closed]
                    [<codex exec args...>]
 ```
 
@@ -2338,6 +2339,7 @@ codex がネイティブに処理し、ラッパーは触れない。最終メ�
 | `--harness-run-id=<id>` | `agent_invocation.run_id` にリンク（省略時 env `HARNESS_RUN_ID`） |
 | `--harness-hitch-id=<id>` | `agent_invocation.hitch_id` にリンク（省略時 env `HARNESS_HITCH_ID`） |
 | `--harness-course-id=<id>` | `agent_invocation.course_id` にリンク（省略時 env `HARNESS_COURSE_ID`） |
+| `--harness-stdin=auto\|inherit\|closed` | child `codex exec` の stdin 方針。既定 `auto` |
 
 **fail-open**: DB が存在しない・書き込み失敗でも codex の exit code をそのまま
 伝播し、stderr に warning を 1 行出す（usage の未記録は運用を止めない）。
@@ -2349,6 +2351,8 @@ codex がネイティブに処理し、ラッパーは触れない。最終メ�
 
 **追加の動作（P2-b/c/d/e）**:
 
+- **stdin 明示化 + auto close**: ラッパーは起動時に child stdin 方針を stderr へ 1 行出す。`--harness-stdin=auto`（既定）は prompt 引数がある場合に child stdin を閉じ、prompt 省略または `-` の場合は stdin を継承する。prompt 引数に加えて pipe した stdin を codex に append したい場合だけ `--harness-stdin=inherit` を指定する。prompt 省略形で stdin を読ませたくない場合は `--harness-stdin=closed` または shell 側の `< /dev/null` を使う。
+- **long-running heartbeat**: child `codex exec` が継続中の間、30 秒ごとに `harness codex exec: still running ...` を stderr へ出す。stdout の最終メッセージ再構築や raw JSONL 出力は変えない。
 - **`HARNESS_CODEX_BIN` を尊重**: `HARNESS_CODEX_BIN` 環境変数が設定されていれば、ラッパーはその値を codex バイナリとして使用する（ハーネスの他の CLI と同様）。
 - **明示的 `--json` → raw JSONL 出力**: ユーザーが `--json` を明示的に指定した場合（例: `harness codex exec --json ... | jq`）、ラッパーは最終メッセージを再構築せず raw JSONL events をそのまま stdout へ書き出す。`--json` を省略した場合はラッパーが透過的に注入し、最終メッセージを再構築して出力する（既存の動作）。
 - **root-option-named フラグの透過**: ラッパーは `program.rawArgs`（Commander が `parseAsync` 時に設定する verbatim argv）から `exec` 以降をスライスしてパススルーを構築する。これにより、root オプション（`--repo`, `--project` 等）として Commander に消費されても codex へ verbatim で転送される。ただし、`-v`/`--version` や `-h`/`--help` のように Commander が即時終了するオプションは Commander の設計上 action に到達しない（任意位置でも横取りされる。codex 自身の `-h` を見たい場合は `--` セパレータ経由で回避: `harness codex exec -- --help`）。

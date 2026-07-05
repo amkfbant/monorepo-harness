@@ -142,6 +142,7 @@ export function registerCodexCommands(
       // 'unavailable' rows in misconfigured environments where codex is absent.
       const { exitCode, eventsContent } = await runExternalCodex({
         codexArgs,
+        stdinMode: wrapper.stdinMode,
         // P2-d: honour HARNESS_CODEX_BIN so callers can override the codex binary,
         // consistent with how the rest of the harness CLI resolves the binary path.
         codexBin: process.env.HARNESS_CODEX_BIN ?? "codex",

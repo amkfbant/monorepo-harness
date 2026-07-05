@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   splitHarnessFlags,
   injectJsonFlag,
+  resolveExternalCodexStdin,
   sniffModel,
   extractFinalMessage,
   runExternalCodex,
@@ -56,6 +57,14 @@ describe("splitHarnessFlags -- separator boundary", () => {
     expect(wrapper.runId).toBe("run-1");
     expect(codexArgs).toEqual(["-m", "gpt-5.5", "the prompt"]);
   });
+
+  it("consumes --harness-stdin=closed without forwarding it to codex", () => {
+    const { wrapper, codexArgs } = splitHarnessFlags([
+      "--harness-stdin=closed", "-m", "gpt-5.5", "the prompt",
+    ]);
+    expect(wrapper.stdinMode).toBe("closed");
+    expect(codexArgs).toEqual(["-m", "gpt-5.5", "the prompt"]);
+  });
 });
 
 describe("splitHarnessFlags (single-token `=` form only)", () => {
@@ -67,6 +76,7 @@ describe("splitHarnessFlags (single-token `=` form only)", () => {
     ]);
     expect(wrapper).toEqual({
       label: "pr-review", runId: "run-1", hitchId: null, courseId: null,
+      stdinMode: "auto",
     });
     expect(codexArgs).toEqual([
       "-m", "gpt-5.5", "-s", "read-only", "-o", "out.txt", "the prompt",
@@ -123,6 +133,54 @@ describe("sniffModel", () => {
   });
 });
 
+describe("resolveExternalCodexStdin", () => {
+  it("auto-closes stdin when a prompt argument is supplied", () => {
+    expect(
+      resolveExternalCodexStdin(["-m", "gpt-5.5", "the prompt"], "auto").childStdin,
+    ).toBe("closed");
+  });
+
+  it("inherits stdin when the prompt is omitted or explicitly '-'", () => {
+    expect(resolveExternalCodexStdin(["-m", "gpt-5.5"], "auto").childStdin).toBe("inherit");
+    expect(resolveExternalCodexStdin(["-m", "gpt-5.5", "-"], "auto").childStdin).toBe("inherit");
+  });
+
+  it("does not mistake option values or review options for prompt text", () => {
+    expect(
+      resolveExternalCodexStdin(["-m", "gpt-5.5", "-s", "read-only"], "auto").childStdin,
+    ).toBe("inherit");
+    expect(
+      resolveExternalCodexStdin(["review", "--base", "main", "check this diff"], "auto").childStdin,
+    ).toBe("closed");
+  });
+
+  it("keeps stdin open for resume session prompts that use '-'", () => {
+    expect(
+      resolveExternalCodexStdin(["resume", "session-123", "-"], "auto").childStdin,
+    ).toBe("inherit");
+    expect(
+      resolveExternalCodexStdin(["resume", "--last", "-"], "auto").childStdin,
+    ).toBe("inherit");
+    expect(
+      resolveExternalCodexStdin(["resume", "--last", "-a", "never", "-"], "auto").childStdin,
+    ).toBe("inherit");
+    expect(
+      resolveExternalCodexStdin(
+        ["resume", "--last", "--ask-for-approval", "never", "-"],
+        "auto",
+      ).childStdin,
+    ).toBe("inherit");
+    expect(
+      resolveExternalCodexStdin(["resume", "session-123", "follow up"], "auto").childStdin,
+    ).toBe("closed");
+  });
+
+  it("honors explicit stdin modes", () => {
+    expect(resolveExternalCodexStdin(["prompt"], "inherit").childStdin).toBe("inherit");
+    expect(resolveExternalCodexStdin([], "closed").childStdin).toBe("closed");
+  });
+});
+
 describe("extractFinalMessage", () => {
   it("returns the last assistant message text item", () => {
     const jsonl = [
@@ -161,15 +219,16 @@ describe("extractFinalMessage", () => {
 });
 
 describe("runExternalCodex", () => {
-  it("injects --json, forwards stderr, returns captured JSONL + exit code", async () => {
-    const calls: { bin: string; args: string[] }[] = [];
+  it("injects --json, closes stdin for prompt args, forwards stderr, returns captured JSONL + exit code", async () => {
+    const calls: { bin: string; args: string[]; stdinMode: string }[] = [];
     const stderrSeen: string[] = [];
     const fakeSpawn = async (
       bin: string,
       args: string[],
       onStderr: (c: string) => void,
+      opts: { stdinMode: string },
     ) => {
-      calls.push({ bin, args });
+      calls.push({ bin, args, stdinMode: opts.stdinMode });
       onStderr("progress line\n");
       return { exitCode: 0, stdout: '{"type":"turn.completed","usage":{}}\n' };
     };
@@ -180,6 +239,8 @@ describe("runExternalCodex", () => {
       spawnImpl: fakeSpawn,
     });
     expect(calls[0]?.args).toEqual(["exec", "--json", "-m", "gpt-5.5", "hi"]);
+    expect(calls[0]?.stdinMode).toBe("closed");
+    expect(stderrSeen.join("")).toContain("stdin closed");
     expect(stderrSeen.join("")).toContain("progress line");
     expect(res.exitCode).toBe(0);
     expect(res.eventsContent).toContain("turn.completed");
@@ -188,7 +249,7 @@ describe("runExternalCodex", () => {
   it("returns a non-zero exit without throwing", async () => {
     const fakeSpawn: SpawnImpl = async () => ({ exitCode: 7, stdout: "" });
     const res = await runExternalCodex({
-      codexArgs: ["x"], codexBin: "codex", spawnImpl: fakeSpawn,
+      codexArgs: ["x"], codexBin: "codex", onStderr: () => {}, spawnImpl: fakeSpawn,
     });
     expect(res.exitCode).toBe(7);
   });
@@ -205,5 +266,34 @@ describe("runExternalCodex", () => {
     expect(res.exitCode).toBe(127);
     expect(res.eventsContent).toBe("");
     expect(stderrSeen.join("")).toContain("failed to spawn codex");
+  });
+
+  it("emits heartbeat lines while codex is still running", async () => {
+    vi.useFakeTimers();
+    try {
+      const stderrSeen: string[] = [];
+      let finish: ((value: { exitCode: number; stdout: string }) => void) | undefined;
+      const fakeSpawn: SpawnImpl = async () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        });
+
+      const run = runExternalCodex({
+        codexArgs: ["long prompt"],
+        codexBin: "codex",
+        onStderr: (c) => stderrSeen.push(c),
+        spawnImpl: fakeSpawn,
+        progressHeartbeatMs: 1000,
+      });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      finish?.({ exitCode: 0, stdout: "" });
+      await run;
+
+      expect(stderrSeen.join("")).toContain("still running");
+      expect(stderrSeen.join("")).toContain("stdin closed");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
