@@ -73,6 +73,10 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | F10 | 2026-05-21 phase2 | P1 cleanup (domain lock 取らず) | closed (impl) | `2026-05-21-phase2-review-commands-cleanup.md` |
 | F11 | 2026-05-21 phase2 | P1 cleanup (runId/meta 検証なし) | closed (impl) | `2026-05-21-phase2-review-commands-cleanup.md` |
 | F12 | 2026-05-21 phase2 | P2 cli (cleanup gate exit code) | closed (impl) | `2026-05-21-phase2-review-commands-cleanup.md` |
+| F13 | 2026-06-13 claude-p feasibility | info (`--setting-sources ""` でサブスク維持のままクリーン隔離可) | observed | `2026-06-13-design-review-claude-p-coder-feasibility.md` |
+| F14 | 2026-06-13 claude-p feasibility | P1 (events/usage スキーマ非互換 → 中立アダプタ必須) | deferred | `2026-06-13-design-review-claude-p-coder-feasibility.md` |
+| F15 | 2026-06-13 claude-p feasibility | P1 (`-p` permission/containment 境界 未検証) | deferred | `2026-06-13-design-review-claude-p-coder-feasibility.md` |
+| F16 | 2026-06-13 claude-p feasibility | info (サブスク rate 枠共有 + ephemeral cache コスト) | observed | `2026-06-13-design-review-claude-p-coder-feasibility.md` |
 
 ## Reports
 
@@ -106,6 +110,7 @@ Finding ID は **F1, F2, …** で連番。レポート間で連続させる（�
 | 2026-05-21 | [Phase 4 close package](2026-05-21-phase4-close.md) | Phase 4 全体（4-1〜4-9 + 4-10）のクローズ。11 項目の close 条件、CLI 一覧、codex review サマリ（P0 ゼロ）。`phase4-close` タグ |
 | 2026-05-25 | [Phase 18 close — MCP server](2026-05-25-phase18-close.md) | coding agent 向け stdio MCP server。tools/resources/prompts、permission、dry-run、OperationRunner mutation、confirmation、audit/redaction。各 subphase を gpt-5.5/xhigh review、最終 full suite 1175 passed / 1 skipped |
 | 2026-05-26 | [Phase 19 close — Goal convergence controller](2026-05-26-phase19-close.md) | DB-backed goal sessions / attempts / review cycles / findings / close checks / convergence decisions。CLI/MCP goal tools、goalId run/review integration、simulated loop fixture matrix。各 subphase を gpt-5.5/xhigh review |
+| 2026-06-13 | [claude -p coder feasibility（調査のみ）](2026-06-13-design-review-claude-p-coder-feasibility.md) | codex exec コーダーを `claude -p` にサブスク範囲で代替できるか実機検証。`--setting-sources ""` でサブスク維持のままクリーン隔離可（F13）、編集/Bash も `-p`+acceptEdits で実走。本丸は events/usage スキーマ非互換（F14）と containment 境界（F15）。コード変更なし |
 
 ## Workflow
 
